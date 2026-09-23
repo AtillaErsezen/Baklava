@@ -10,6 +10,7 @@ APP_NAME = "ml-factory"
 VOLUME_NAME = "ml-factory-data"
 DATA_DIR = "/data"
 SEED = 42
+PIPELINE_VERSION = "tracking-v1"
 
 # (task, model) -> (module, class, default kwargs). Claude's params override the defaults.
 ESTIMATORS = {
@@ -60,9 +61,10 @@ def load_local(path: str):
     return df
 
 
-def upload_dataset(df) -> str:
-    """Write df as parquet to the Modal volume. Returns the path inside the volume."""
+def upload_dataset(df, with_metadata=False):
+    """Write df as parquet to Modal; optionally return its path and exact byte hash."""
     import os
+    import hashlib
     import tempfile
     import uuid
 
@@ -74,9 +76,11 @@ def upload_dataset(df) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         p = os.path.join(tmp, "data.parquet")
         df.to_parquet(p, index=False)
+        with open(p, "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
         with vol.batch_upload(force=True) as batch:
             batch.put_file(p, remote)
-    return remote
+    return {"path": remote, "sha256": digest} if with_metadata else remote
 
 
 # ------------------------------------------------------------------ remote side (Modal containers)
@@ -102,21 +106,40 @@ def _clean(X):
 
 
 def _load_xy(spec):
-    """Read the spec's dataset from the volume and split it into (X, y, classes).
+    """Read the volume dataset and return (X, y, classes, data_manifest).
     Drops rows with a missing target, sorts by time_column when one is given (required
     for timeseries CV), and removes drop_columns. For classification, y is
     label-encoded and `classes` holds the original labels in encoded order; for
     regression, y is float and `classes` is None."""
     import pandas as pd
+    import hashlib
+    import io
+    from pathlib import Path
 
     vol.reload()
-    df = pd.read_parquet(f"{DATA_DIR}{spec['dataset_path']}")
+    raw = Path(f"{DATA_DIR}{spec['dataset_path']}").read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if spec.get("prepared_sha256") and digest != spec["prepared_sha256"]:
+        raise ValueError("Prepared dataset hash mismatch")
+    df = pd.read_parquet(io.BytesIO(raw))
+    source_count = len(df)
     target = spec["target"]
     df = df.dropna(subset=[target])
     if spec.get("time_column") and spec["time_column"] in df.columns:
         df = df.sort_values(spec["time_column"]).reset_index(drop=True)
     y = df[target]
-    X = _clean(df.drop(columns=[target, *spec.get("drop_columns", [])], errors="ignore"))
+    source_features = df.drop(columns=[target, *spec.get("drop_columns", [])], errors="ignore")
+    X = _clean(source_features)
+    manifest = {
+        "dataset_id": spec.get("dataset_id"), "source_sha256": spec.get("source_sha256"),
+        "prepared_data_path": spec["dataset_path"], "prepared_sha256": digest,
+        "pipeline_version": PIPELINE_VERSION, "target": target,
+        "source_row_count": source_count, "usable_row_count": len(X),
+        "excluded_missing_target": source_count - len(X),
+        "included_source_columns": source_features.columns.tolist(), "included_columns": X.columns.tolist(),
+        "dropped_columns": [c for c in spec.get("drop_columns", []) if c in df.columns and c != target],
+        "derived_columns": [c for c in X.columns if c not in source_features.columns],
+    }
     classes = None
     if spec["task"] == "classification":
         from sklearn.preprocessing import LabelEncoder
@@ -126,7 +149,35 @@ def _load_xy(spec):
         classes = le.classes_.tolist()
     else:
         y = y.astype(float).values
-    return X, y, classes
+    return X, y, classes, manifest
+
+
+def _effective_config(pipe):
+    import importlib.metadata
+    import json
+
+    prep = pipe.named_steps["prep"]
+    numeric = prep.transformers[0][1]
+    categorical = prep.transformers[1][1]
+    packages = ("pandas", "pyarrow", "scikit-learn", "numpy", "lightgbm", "xgboost")
+    versions = {}
+    for package in packages:
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    return json.loads(json.dumps({
+        "pipeline_version": PIPELINE_VERSION,
+        "estimator": type(pipe.named_steps["model"]).__name__,
+        "params": pipe.named_steps["model"].get_params(deep=False),
+        "preprocessing": {
+            "numeric_impute": numeric.named_steps["impute"].strategy,
+            "scale": "scale" in numeric.named_steps,
+            "categorical_encoder": type(categorical.named_steps["encode"]).__name__,
+            "categorical_params": categorical.named_steps["encode"].get_params(deep=False),
+            "numeric_columns": prep.transformers[0][2], "categorical_columns": prep.transformers[1][2],
+        }, "library_versions": versions,
+    }, default=str))
 
 
 def _build_pipeline(X, spec):
@@ -218,15 +269,33 @@ def train_candidate(spec: dict) -> dict:
     """Cross-validate ONE candidate. Never raises: errors come back so the agent can react."""
     import time
     import traceback
+    import hashlib
+    import math
 
     from sklearn.model_selection import cross_validate
 
     t0 = time.time()
+    metadata = {}
     try:
-        X, y, classes = _load_xy(spec)
+        X, y, classes, manifest = _load_xy(spec)
+        metadata["data_manifest"] = manifest
+        pipe = _build_pipeline(X, spec)
+        metadata["effective_config"] = _effective_config(pipe)
+        splitter = _cv(spec)
+        splits = list(splitter.split(X, y))
+        split_hash = hashlib.sha256()
+        for train, validation in splits:
+            split_hash.update(train.astype("<i8").tobytes())
+            split_hash.update(b"|validation|")
+            split_hash.update(validation.astype("<i8").tobytes())
+            split_hash.update(b"|fold|")
+        metadata["evaluation_config"] = {"method": type(splitter).__name__, "n_splits": len(splits),
+                        "seed": None if spec.get("cv") == "timeseries" else SEED,
+                        "time_column": spec.get("time_column"), "split_sha256": split_hash.hexdigest(),
+                        "fold_sizes": [{"train": len(tr), "validation": len(val)} for tr, val in splits]}
         scoring = _scoring(spec["task"], len(classes) if classes else 0)
         res = cross_validate(
-            _build_pipeline(X, spec), X, y, cv=_cv(spec), scoring=scoring,
+            pipe, X, y, cv=splits, scoring=scoring,
             return_train_score=True, error_score="raise",
         )
         metrics = {}
@@ -234,12 +303,15 @@ def train_candidate(spec: dict) -> dict:
             sign = -1 if scorer.startswith("neg_") else 1
             val, tr = sign * res[f"test_{name}"], sign * res[f"train_{name}"]
             metrics[name] = {"mean": round(float(val.mean()), 5), "std": round(float(val.std()), 5),
-                             "train_mean": round(float(tr.mean()), 5)}
+                             "train_mean": round(float(tr.mean()), 5),
+                             "fold_scores": [float(v) for v in val], "train_fold_scores": [float(v) for v in tr]}
+            if not all(math.isfinite(float(v)) for v in [*val, *tr]):
+                raise ValueError(f"Non-finite {name} scores; inspect the dataset and split configuration")
         return {"name": spec["name"], "ok": True, "metrics": metrics,
-                "n_rows": len(X), "fit_seconds": round(time.time() - t0, 1)}
+                "n_rows": len(X), "fit_seconds": round(time.time() - t0, 1), **metadata}
     except Exception as e:
         return {"name": spec.get("name"), "ok": False, "error": f"{type(e).__name__}: {e}",
-                "trace": traceback.format_exc()[-1500:]}
+                "trace": traceback.format_exc()[-1500:], "fit_seconds": round(time.time() - t0, 1), **metadata}
 
 
 @app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1800)
@@ -249,7 +321,7 @@ def fit_final(spec: dict, run_id: str) -> dict:
 
     import joblib
 
-    X, y, classes = _load_xy(spec)
+    X, y, classes, manifest = _load_xy(spec)
     pipe = _build_pipeline(X, spec)
     pipe.fit(X, y)
     out_dir = f"{DATA_DIR}/models/{run_id}"
@@ -257,7 +329,32 @@ def fit_final(spec: dict, run_id: str) -> dict:
     path = f"{out_dir}/{spec['name']}.joblib"
     joblib.dump({"pipeline": pipe, "classes": classes, "spec": spec}, path)
     vol.commit()
-    return {"model_path": path.removeprefix(DATA_DIR), "n_rows": len(X), "top_features": _top_features(pipe)}
+    return {"ok": True, "model_path": path.removeprefix(DATA_DIR), "n_rows": len(X), "top_features": _top_features(pipe),
+            "data_manifest": manifest, "effective_config": _effective_config(pipe),
+            "evaluation_config": {"method": "full_fit", "rows": len(X)}}
+
+
+@app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1800)
+def track_training(spec: dict, run_id: str, stage: str = "candidate_cv"):
+    """Stream actual worker start and completion; no Supabase credentials enter the worker."""
+    from datetime import datetime, timezone
+    import time
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    t0 = time.monotonic()
+    yield {"kind": "started", "started_at": started_at}
+    try:
+        if stage == "candidate_cv":
+            result = train_candidate.local(spec)
+        elif stage == "final_fit":
+            result = fit_final.local(spec, run_id)
+        else:
+            raise ValueError("Unknown training stage")
+    except Exception as exc:
+        result = {"name": spec["name"], "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    result.update(started_at=started_at, finished_at=datetime.now(timezone.utc).isoformat(),
+                  fit_seconds=round(time.monotonic() - t0, 3))
+    yield {"kind": "finished", "result": result}
 
 
 @app.local_entrypoint()

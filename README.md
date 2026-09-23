@@ -13,8 +13,9 @@ CSV/Parquet ──► agent.py (local) ─────────────�
                   │◄───────────────────────────────────────────┘
                   │
                   ├─ upload_dataset ──► Modal volume ml-factory-data (/datasets/*.parquet)
-                  ├─ train_candidate.map(specs) ──► N containers in parallel, CV each candidate
-                  └─ fit_final ──► winner refit on all data ──► /models/<run_id>/<name>.joblib
+                  ├─ track_training.remote_gen ──► parallel CV workers, start/result packets
+                  ├─ track_training(final_fit) ──► winner refit ──► /models/<run_id>/<name>.joblib
+                  └─ tracking.py ──► durable JSONL + Supabase dataset/run/training/event records
 ```
 
 - **Claude never writes training code.** It only picks a model name and constructor params
@@ -38,7 +39,7 @@ CSV/Parquet ──► agent.py (local) ─────────────�
 ## Setup
 
 ```powershell
-uv sync                                   # creates .venv from uv.lock
+uv sync --frozen                          # creates .venv from uv.lock
 uv run modal setup                        # browser login, once
 $env:ANTHROPIC_API_KEY = "sk-ant-..."     # bash: export ANTHROPIC_API_KEY=...
 uv run make_demo_data.py                  # data/churn.csv, data/houses.csv
@@ -58,33 +59,53 @@ uv run modal run modal_train.py --csv data/houses.csv --target SalePrice --task 
 # 2) Deploy: the agent looks up the deployed functions by app name
 uv run modal deploy modal_train.py
 
-# 3) Agent
-uv run agent.py data/churn.csv --target Churn
-uv run agent.py data/houses.csv --target SalePrice --task regression
+# 3) Agent with local tracking
+uv run agent.py data/churn.csv --target Churn --offline
+uv run agent.py data/houses.csv --target SalePrice --task regression --offline
 
 # No Anthropic key? Scripted stand-in for Claude; everything else (Modal, events, saving) is real
-uv run agent.py data/churn.csv --target Churn --dry-run
+uv run agent.py data/churn.csv --target Churn --dry-run --offline
 ```
 
 `CLAUDE_MODEL` overrides the model (default `claude-sonnet-5`).
+
+For shared Supabase history, follow the [handoff](docs/supabase_handoff.md), register an approved
+dataset, and load the backend environment for the command:
+
+```sh
+uv run --frozen --env-file .env python agent.py --dataset-id <dataset-uuid> --target Churn --dry-run
+```
+
+This downloads the private file and verifies its hash before training. A local path also
+works if its exact bytes and filename match a registered dataset. The ML teammate must
+deploy the updated `modal_train.py`, including `track_training`, first. `--dry-run` still
+runs real Modal training; `--offline` disables Supabase tracking only. Deployment steps,
+registered demo IDs, and the frontend contract are in the [team handoff](docs/supabase_handoff.md).
 
 ## Outputs
 
 | File | Contents |
 |---|---|
-| `runs/<run_id>_events.jsonl` | Every event, in order. Use it for replay mode. |
-| `runs/<run_id>_results.json` | Data profile, every candidate's CV results, the final model |
+| `runs/<run_id>_events.jsonl` | Flushed before network delivery; events and state snapshots for replay/reconciliation |
+| `runs/<run_id>_results.json` | Dataset, run, training attempts, profile, CV results, final model, pending delivery count |
 | `runs/<run_id>_report.md` | Claude's markdown report |
 | Modal volume `/models/<run_id>/<name>.joblib` | `{"pipeline", "classes", "spec"}`, where `pipeline` is a fitted sklearn Pipeline |
 
 ## Events (live UI)
 
-Each event is `{run_id, ts, kind, payload}`. It is printed, saved to the jsonl, and inserted
-into Supabase if `SUPABASE_URL` / `SUPABASE_KEY` are set:
+Each event is `{event_id, run_id, training_id, ts, kind, payload}`. It is printed and
+journaled locally before delivery. With `SUPABASE_URL` / `SUPABASE_KEY` configured,
+`apply_tracking_event` updates state and inserts its event in one database transaction.
+The `payload._tracking` snapshot is for recovery; use the tables for UI state.
 
 | kind | payload |
 |---|---|
 | `run_start` | dataset, target, rows, features |
+| `run_configured` | resolved task type |
+| `training_queued` | candidate name and stage; stable training ID in the envelope |
+| `training_started` | actual worker start timestamp |
+| `training_completed` / `training_failed` | individual result, status, metrics or error |
+| `model_selected` | successful CV training ID linked to the final fit |
 | `thought` | Claude's plain-language reasoning before each tool call |
 | `tool_call` | tool name + input |
 | `status` | progress message (upload, final fit) |
@@ -92,21 +113,25 @@ into Supabase if `SUPABASE_URL` / `SUPABASE_KEY` are set:
 | `leaderboard` | ranked rows for the round, primary metric, wall time |
 | `final_model` | winner spec, model path, top features |
 | `report` | markdown + `spoken_summary` (≤60 words, for TTS) |
+| `run_end` | completed, incomplete, or failed; reason when applicable |
 
-Supabase table:
+Apply the versioned files in [supabase/migrations](supabase/migrations) for `datasets`,
+`runs`, `trainings`, `events`, and the backend-only RPC. The browser has read access to
+this shared sample-data history. Raw dataset files stay in a private bucket.
 
-```sql
-create table events (
-  id bigserial primary key,
-  run_id text, ts double precision, kind text, payload jsonb
-);
-alter publication supabase_realtime add table events;
+**Recovery:** delivery retries are bounded; pending events remain in the journal. Replay
+the whole journal in file order after restoring connectivity; repeated events are deduplicated:
+
+```sh
+uv run --frozen --env-file .env python -m scripts.reconcile_tracking runs/<run_id>_events.jsonl
 ```
 
-**Replay mode**: if the live demo fails, play a saved `runs/*_events.jsonl` into the UI in `ts` order.
+**Replay mode:** a UI can play saved events in file order. A browser replay player and
+reconnect handling still need to be implemented by the UI owner.
 
 ## Files
 
-- [modal_train.py](modal_train.py) — model menu, preprocessing, CV, and the Modal functions `train_candidate` / `fit_final`, plus the smoke-test entrypoint
+- [modal_train.py](modal_train.py) — model menu, preprocessing, CV, lineage, `track_training`, and the smoke-test entrypoint
 - [agent.py](agent.py) — data profiling, tool schemas, the Claude loop, the event stream, `--dry-run`
+- [tracking.py](tracking.py) — dataset verification, per-attempt tracking, durable logs and reconciliation
 - [make_demo_data.py](make_demo_data.py) — synthetic demo datasets, including a planted leakage column

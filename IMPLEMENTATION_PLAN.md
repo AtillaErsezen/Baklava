@@ -11,8 +11,8 @@ and reporting results like a junior ML engineer would.
 |---|---|---|
 | Agent / reasoning | Claude (tool use) | Profiles data, plans experiments, picks models + hyperparameters, decides when to stop |
 | Training compute | Modal | Fixed menu of models (LogReg/Ridge, RandomForest, LightGBM, XGBoost, MLP); trains candidates in parallel via `.map()` |
-| State / live events | Supabase | `events` table; realtime feed of every agent step for the UI |
-| Frontend | Lovable (fallback: Streamlit) | Upload CSV → watch the agent think and run experiments live → leaderboard → final report |
+| State / live events | Supabase | Dataset versions, runs, individual training attempts and metrics, plus an `events` feed for the UI |
+| Frontend | Lovable (fallback: Streamlit) | Upload CSV → inspect dataset → watch experiments live → compare each attempt's data, settings, and performance → final report |
 | Voice | ElevenLabs | ~30s spoken summary of the final report for the demo |
 
 Claude never writes training code directly — it only *selects* a model name and
@@ -30,9 +30,11 @@ reproducible instead of depending on generated code executing correctly.
 
 ```
 ml-factory/
-├── modal_train.py     # model menu, preprocessing, CV, train_candidate, fit_final
+├── modal_train.py      # model menu, preprocessing, CV, track_training, final fit
 ├── agent.py            # data profiling, Claude tool loop, event stream, CLI
-├── requirements.txt
+├── tracking.py         # durable dataset/run/training tracking and replay
+├── supabase/           # database migrations, fixtures, SQL checks
+├── pyproject.toml      # dependencies; uv.lock pins the local environment
 └── README.md           # setup + run commands
 ```
 
@@ -43,7 +45,7 @@ ml-factory/
 | 8:00–9:00 | Team forming, roles, lock scope. Pick 2–3 demo datasets (one classification, one regression, one with a deliberately leaky column). |
 | 9:00–11:00 | **Modal backend, no agent.** Run `modal run modal_train.py --csv ... --target ...` until every model in the menu trains cleanly. This is the highest-risk piece — finish it first. |
 | 11:00–13:00 | **Agent loop.** Wire up Claude + the 5 tools (`get_data_profile`, `inspect_column`, `run_experiments`, `finalize_model`, `write_report`). Get one full run end to end on the CLI. |
-| 13:00–15:00 | **UI + live events.** Supabase `events` table, Lovable frontend subscribing to it, CSV upload flow. |
+| 13:00–15:00 | **UI + training history.** Supabase dataset/run/training records and event feed, Lovable dataset details and per-attempt performance, CSV upload flow. |
 | 15:00–16:00 | Report generation polish, ElevenLabs voice summary, pre-run all demo datasets once and cache the results (replay mode). |
 | 16:00+ | Pitch prep, rehearse twice. No new features after this point. |
 
@@ -51,38 +53,38 @@ ml-factory/
 
 - **Modal / ML** — model menu, preprocessing, cross-validation, final fit.
 - **Agent** — system prompt, tool schemas, the Claude loop, data profiling.
-- **UI + Supabase** — event table, realtime subscription, CSV upload, leaderboard/report rendering.
+- **UI + Supabase** — dataset/run/training records, event feed, CSV upload, dataset details, per-attempt performance comparison, and report rendering.
 - **(if 4th)** — pitch narrative, demo data curation, ElevenLabs integration, rehearsal.
+
+Supabase workstream: [team handoff and responsibilities](docs/supabase_handoff.md).
 
 ## Setup checklist
 
 ```bash
-pip install -r requirements.txt
-modal setup
+uv sync --frozen
+uv run modal setup
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # 1) Smoke test the backend alone — do this before touching the agent
-modal run modal_train.py --csv data/titanic.csv --target Survived
+uv run modal run modal_train.py --csv data/churn.csv --target Churn
 
 # 2) Deploy so the agent can call the named functions
-modal deploy modal_train.py
+uv run modal deploy modal_train.py
 
 # 3) Run the agent
-python agent.py data/titanic.csv --target Survived
-python agent.py data/houses.csv --target SalePrice --task regression
+uv run agent.py data/churn.csv --target Churn --offline
+uv run agent.py data/houses.csv --target SalePrice --task regression --offline
 ```
 
-Supabase (optional, for the live UI):
+Supabase (optional for CLI-only execution; required for the live training-history UI):
 
-```sql
-create table events (
-  id bigserial primary key,
-  run_id text, ts double precision, kind text, payload jsonb
-);
-alter publication supabase_realtime add table events;
-```
-
-Set `SUPABASE_URL` / `SUPABASE_KEY` and the agent streams every step there.
+The [Supabase handoff](docs/supabase_handoff.md) covers the two migrations,
+dataset registration, and live tracking checks. The agent now writes dataset-linked
+runs and individual attempts through an atomic RPC, with durable JSONL recovery.
+Use `uv run --frozen --env-file .env python agent.py --dataset-id <id> --target <column>`
+for live history. `--offline` keeps tracking local but still calls Modal and the LLM;
+`--dry-run` replaces only the LLM with a script and still performs real Modal training.
+The [team handoff](docs/supabase_handoff.md) contains deployment and UI contracts.
 
 ## Agent workflow (what Claude actually does per run)
 

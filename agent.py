@@ -10,12 +10,16 @@ import os
 import time
 import uuid
 from types import SimpleNamespace
+import queue
+import re
+import threading
 
 import anthropic
 import modal
 import pandas as pd
 
-from modal_train import APP_NAME, MODEL_MENU, load_local, upload_dataset
+from modal_train import APP_NAME, MODEL_MENU, upload_dataset
+from tracking import TrackingLog, json_safe, load_tracked_dataset, supabase_client, verify_tracking_api
 
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
 MAX_STEPS = 20
@@ -244,59 +248,76 @@ class ScriptedClient:
 
 # ------------------------------------------------------------------ the agent
 
-def _maybe_supabase():
-    """Return a Supabase client for live event streaming, or None if the env vars
-    aren't set or the package/connection fails. Live UI is optional; jsonl replay
-    always works, so callers should treat a None return as a no-op, not an error."""
-    url, key = os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY")
-    if not (url and key):
-        return None
-    try:
-        from supabase import create_client
-        return create_client(url, key)
-    except Exception as e:
-        print("Supabase disabled:", e)
-        return None
-
-
 class FactoryRun:
     """One end-to-end run: load data, profile it, drive the Claude agent loop through
     its tools (profile/inspect/experiment/finalize/report), and save the result.
     One instance = one dataset + target; not reused across runs."""
 
-    def __init__(self, data_path: str, target: str, task_hint: str | None = None, dry_run: bool = False):
+    def __init__(self, data_path: str | None, target: str, task_hint: str | None = None,
+                 dry_run: bool = False, dataset_id: str | None = None, offline: bool = False,
+                 output_dir: str = "runs"):
         """Load the dataset, validate the target column, and profile it up front so
         get_data_profile is a free tool call (no recomputation during the agent loop)."""
-        self.run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
-        self.df = load_local(data_path)
+        self.run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+        self.supabase = supabase_client(offline)
+        verify_tracking_api(self.supabase)
+        self.df, self.dataset = load_tracked_dataset(data_path, dataset_id, self.supabase)
         if target not in self.df.columns:
             raise SystemExit(f"Target '{target}' not found. Columns: {list(self.df.columns)}")
-        self.dataset_name = os.path.basename(data_path)
+        self.dataset_name = self.dataset["name"]
         self.target, self.task_hint = target, task_hint
         self.profile = profile_data(self.df, target)
         self.remote_path = None
+        self.prepared_sha256 = None
         self.rounds = 0
-        self.specs, self.results, self.events = {}, [], []
+        self.specs, self.results, self.candidate_ids = {}, [], {}
         self.final, self.report = None, None
         self.client = ScriptedClient(self.profile) if dry_run else anthropic.Anthropic()
-        self.train_fn = modal.Function.from_name(APP_NAME, "train_candidate")
-        self.final_fn = modal.Function.from_name(APP_NAME, "fit_final")
-        self.supabase = _maybe_supabase()
+        self.track_fn = modal.Function.from_name(APP_NAME, "track_training")
+        self.output_dir = output_dir
+        self.tracker = TrackingLog(self.run_id, self.dataset, target, task_hint, self.supabase, output_dir)
+        self.events = self.tracker.events
 
     # ---- event stream: stdout + jsonl (replay mode for the demo) + optional Supabase (live UI)
     def emit(self, kind: str, payload: dict):
-        """Record one timeline event (thought, tool_call, leaderboard, etc.) to the
-        in-memory list that `save()` persists, print it, and best-effort push it to
-        Supabase for the live UI. A Supabase failure is logged, never raised."""
-        event = {"run_id": self.run_id, "ts": time.time(), "kind": kind,
-                 "payload": json.loads(json.dumps(payload, default=str))}
-        self.events.append(event)
-        print(f"[{kind}] {json.dumps(payload, default=str, ensure_ascii=False)[:400]}")
-        if self.supabase:
+        """Append a durable replay event, then attempt atomic live delivery."""
+        self.tracker.emit(kind, payload)
+
+    def _stream_trainings(self, jobs, primary_metric=None):
+        """Consume worker packets as they arrive, with all persistence on this thread."""
+        packets = queue.Queue()
+
+        def receive(training_id, spec, stage):
             try:
-                self.supabase.table("events").insert(event).execute()
-            except Exception as e:
-                print("supabase insert failed:", e)
+                for packet in self.track_fn.remote_gen(spec, self.run_id, stage):
+                    packets.put((training_id, packet))
+            except Exception as exc:
+                packets.put((training_id, {"kind": "stream_error", "error": f"Worker stream failed ({type(exc).__name__}); completion unconfirmed."}))
+            finally:
+                packets.put((training_id, {"kind": "done"}))
+
+        for training_id, spec, stage in jobs:
+            threading.Thread(target=receive, args=(training_id, spec, stage), daemon=True).start()
+        remaining = {job[0] for job in jobs}
+        results = []
+        while remaining:
+            training_id, packet = packets.get()
+            row = self.tracker.trainings[training_id]
+            kind = packet["kind"]
+            if kind == "done":
+                remaining.discard(training_id)
+            if row["status"] in ("succeeded", "failed"):
+                continue
+            if kind == "started":
+                self.tracker.training_started(training_id, packet["started_at"])
+            elif kind in ("finished", "stream_error", "done"):
+                result = packet.get("result") or {"ok": False, "error": packet.get("error", "Worker stream ended without a result.")}
+                result = {**result, "name": row["candidate_name"], "training_id": training_id, "round": row["round"]}
+                result["ok"] = self.tracker.training_finished(training_id, result, primary_metric)
+                if not result["ok"]:
+                    result["error"] = row["error"]
+                results.append(result)
+        return results
 
     # ---- tools
     # Each tool_* method mirrors one entry in TOOLS and is dispatched by name from
@@ -326,31 +347,44 @@ class FactoryRun:
 
     def tool_run_experiments(self, inp):
         """Validate and enqueue a round of candidates, upload the dataset to Modal on
-        first use, cross-validate them in parallel via `train_fn.map`, and return a
+        first use, cross-validate them through parallel worker streams, and return a
         leaderboard sorted by the primary metric (with overfit_gap and a
         suspiciously-high-score warning per row). Enforces MAX_ROUNDS/MAX_CANDIDATES
         and rejects models that don't belong to the given task."""
         if self.rounds >= MAX_ROUNDS:
             return {"error": f"Budget exhausted ({MAX_ROUNDS} rounds). Finalize the best candidate."}
         task, pm = inp["task"], inp["primary_metric"]
+        if task not in MODEL_MENU:
+            return {"error": "Task must be classification or regression."}
         if pm not in (("roc_auc", "f1_macro", "accuracy") if task == "classification" else ("rmse", "mae", "r2")):
             return {"error": f"Metric '{pm}' does not fit task '{task}'."}
         cands = inp["candidates"][:MAX_CANDIDATES]
+        if not cands or any(not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", c["name"]) for c in cands):
+            return {"error": "Provide candidates with names containing only letters, numbers, underscores, and hyphens."}
         bad = [c["name"] for c in cands if c["model"] not in MODEL_MENU[task]]
         if bad:
             return {"error": f"Invalid models for {task}: {bad}. Allowed: {MODEL_MENU[task]}"}
 
+        self.tracker.start(self.profile)
+        self.tracker.set_task(task)
         if self.remote_path is None:
             self.emit("status", {"msg": "Uploading dataset to Modal"})
-            self.remote_path = upload_dataset(self.df)
+            prepared = upload_dataset(self.df, with_metadata=True)
+            self.remote_path, self.prepared_sha256 = prepared["path"], prepared["sha256"]
         self.rounds += 1
 
         base = {"dataset_path": self.remote_path, "target": self.target, "task": task,
+                "dataset_id": self.dataset["id"], "source_sha256": self.dataset["source_sha256"],
+                "prepared_sha256": self.prepared_sha256,
                 "cv": inp.get("cv", "kfold"), "cv_folds": inp.get("cv_folds", 5),
                 "time_column": inp.get("time_column"), "drop_columns": inp.get("drop_columns", [])}
         specs = []
         for c in cands:
-            name = c["name"] if c["name"] not in self.specs else f"{c['name']}_r{self.rounds}"
+            name = c["name"]
+            suffix = 1
+            while name in self.specs:
+                name = f"{c['name']}_r{self.rounds}_{suffix}"
+                suffix += 1
             spec = {**base, "name": name, "model": c["model"],
                     "params": c.get("params") or {}, "preprocessing": c.get("preprocessing") or {}}
             self.specs[name] = spec
@@ -361,12 +395,14 @@ class FactoryRun:
         t0 = time.time()
         hib = HIGHER_IS_BETTER[pm]
         rows = []
-        for r in self.train_fn.map(specs):
+        jobs = [(self.tracker.queue_training(spec, self.rounds), spec, "candidate_cv") for spec in specs]
+        for r in self._stream_trainings(jobs, pm):
             r["round"] = self.rounds
             self.results.append(r)
             if not r["ok"]:
                 rows.append({"name": r["name"], "error": r["error"]})
                 continue
+            self.candidate_ids[r["name"]] = r["training_id"]
             m = r["metrics"][pm]
             gap = (m["train_mean"] - m["mean"]) if hib else (m["mean"] - m["train_mean"])
             row = {"name": r["name"], pm: m["mean"], "std": m["std"], "train": m["train_mean"],
@@ -388,10 +424,14 @@ class FactoryRun:
         `fit_final`, store the result as self.final, and return the saved model path
         and top features."""
         name = inp["candidate_name"]
-        if name not in self.specs:
-            return {"error": f"Unknown candidate. Known: {list(self.specs)}"}
+        if name not in self.candidate_ids:
+            return {"error": f"Select a successful CV candidate. Available: {list(self.candidate_ids)}"}
         self.emit("status", {"msg": f"Training final model '{name}' on all data"})
-        out = self.final_fn.remote(self.specs[name], self.run_id)
+        parent_id = self.candidate_ids[name]
+        training_id = self.tracker.queue_training(self.specs[name], self.tracker.trainings[parent_id]["round"], "final_fit", parent_id)
+        out = self._stream_trainings([(training_id, self.specs[name], "final_fit")])[0]
+        if out["ok"]:
+            self.tracker.select(parent_id)
         self.final = {"name": name, "spec": self.specs[name], **out}
         self.emit("final_model", self.final)
         return out
@@ -400,18 +440,16 @@ class FactoryRun:
         """Store the agent's final markdown report and short spoken summary. Calling
         this is also the loop's stop signal — `run()` breaks right after."""
         self.report = {"markdown": inp["markdown"], "spoken_summary": inp["spoken_summary"]}
-        self.emit("report", self.report)
+        self.tracker.report(self.report)
         return {"saved": True}
 
     # ---- loop
-    def run(self):
+    def _run_loop(self):
         """Drive the Claude tool-use loop: send the system prompt + task, stream any
         text as `thought` events, dispatch each tool_use block to the matching
         tool_* method, and feed results back as the next user turn. Stops when Claude
         stops calling tools, when write_report has been called, or after MAX_STEPS —
         then always saves whatever was produced."""
-        self.emit("run_start", {"dataset": self.dataset_name, "target": self.target,
-                                "rows": self.profile["n_rows"], "features": self.profile["n_features"]})
         hint = f" The user says this is a {self.task_hint} task." if self.task_hint else ""
         messages = [{"role": "user", "content":
                      f"Dataset '{self.dataset_name}', target column '{self.target}'.{hint} "
@@ -444,19 +482,42 @@ class FactoryRun:
             if self.report:
                 break
 
-        self.save()
+    def run(self):
+        self.tracker.start(self.profile)
+        status, error = "incomplete", "Agent stopped without a successful final fit and report."
+        original_error = None
+        try:
+            self._run_loop()
+            if self.final and self.final.get("ok") and self.report and self.report["markdown"].strip():
+                status, error = "completed", None
+        except BaseException as exc:
+            original_error = exc
+            status, error = "failed", f"Run interrupted ({type(exc).__name__})."
+            raise
+        finally:
+            cleanup_error = None
+            try:
+                self.tracker.end(status, error)
+            except Exception as exc:
+                cleanup_error = exc
+            try:
+                self.save()
+            except Exception as exc:
+                cleanup_error = cleanup_error or exc
+            if cleanup_error:
+                print(f"Run cleanup failed ({type(cleanup_error).__name__}); inspect the partial local log.")
+                if original_error is None:
+                    raise RuntimeError("Could not finish saving the run.") from cleanup_error
 
     def save(self):
-        """Persist this run under runs/<run_id>_*: the full event timeline as jsonl
-        (for the replay-mode fallback), profile/results/final as json, and the
-        markdown report if one was written. Called once at the end of run()."""
-        os.makedirs("runs", exist_ok=True)
-        prefix = f"runs/{self.run_id}"
-        with open(f"{prefix}_events.jsonl", "w", encoding="utf-8") as f:
-            f.writelines(json.dumps(e, ensure_ascii=False) + "\n" for e in self.events)
+        """Save results/report even after interruption; events are already journaled."""
+        os.makedirs(self.output_dir, exist_ok=True)
+        prefix = f"{self.output_dir}/{self.run_id}"
         with open(f"{prefix}_results.json", "w", encoding="utf-8") as f:
-            json.dump({"profile": self.profile, "results": self.results, "final": self.final}, f,
-                      default=str, indent=2)
+            json.dump(json_safe({"dataset": self.dataset, "run": self.tracker.run,
+                      "trainings": list(self.tracker.trainings.values()), "profile": self.profile,
+                      "results": self.results, "final": self.final,
+                      "pending_events": len(self.tracker.pending)}), f, allow_nan=False, indent=2)
         if self.report:
             with open(f"{prefix}_report.md", "w", encoding="utf-8") as f:
                 f.write(self.report["markdown"])
@@ -465,9 +526,11 @@ class FactoryRun:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("data")
+    ap.add_argument("data", nargs="?")
     ap.add_argument("--target", required=True)
     ap.add_argument("--task", choices=["classification", "regression"])
     ap.add_argument("--dry-run", action="store_true", help="scripted agent, no Anthropic API key needed")
+    ap.add_argument("--dataset-id", help="Registered Supabase dataset UUID; downloads and verifies its exact file")
+    ap.add_argument("--offline", action="store_true", help="Keep tracking locally; requires a local data path")
     args = ap.parse_args()
-    FactoryRun(args.data, args.target, args.task, args.dry_run).run()
+    FactoryRun(args.data, args.target, args.task, args.dry_run, args.dataset_id, args.offline).run()

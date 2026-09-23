@@ -10,3 +10,8 @@ dependencies = [
     "pyarrow>=25.0.1",
     "supabase>=2.31.0",
 ]
+
+[dependency-groups]
+dev = [
+    "scikit-learn==1.7.2",
+]
