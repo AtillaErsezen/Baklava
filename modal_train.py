@@ -1,8 +1,8 @@
 """
 ML Factory — Modal training backend.
 
-  modal deploy modal_train.py                                        # agent calls the deployed functions
-  modal run modal_train.py --csv data/titanic.csv --target Survived  # smoke test WITHOUT the agent (do this first!)
+  uv run modal deploy modal_train.py                                  # agent calls the deployed functions
+  uv run modal run modal_train.py --csv data/churn.csv --target Churn # smoke test WITHOUT the agent (do this first!)
 """
 import modal
 
@@ -11,7 +11,7 @@ VOLUME_NAME = "ml-factory-data"
 DATA_DIR = "/data"
 SEED = 42
 
-# (task, model) -> (module, class, default kwargs). Claude's params override the defaults.
+# (task, model) -> (module, class, default kwargs). The agent's params override the defaults.
 ESTIMATORS = {
     ("classification", "logreg"): ("sklearn.linear_model", "LogisticRegression", {"max_iter": 2000}),
     ("classification", "random_forest"): ("sklearn.ensemble", "RandomForestClassifier", {"n_estimators": 300, "n_jobs": -1, "random_state": SEED}),
@@ -101,32 +101,36 @@ def _clean(X):
     return X
 
 
-def _load_xy(spec):
-    """Read the spec's dataset from the volume and split it into (X, y, classes).
-    Drops rows with a missing target, sorts by time_column when one is given (required
-    for timeseries CV), and removes drop_columns. For classification, y is
-    label-encoded and `classes` holds the original labels in encoded order; for
-    regression, y is float and `classes` is None."""
+def _read(path):
+    """Read a parquet file from the volume (path as returned by upload_dataset)."""
     import pandas as pd
 
     vol.reload()
-    df = pd.read_parquet(f"{DATA_DIR}{spec['dataset_path']}")
+    return pd.read_parquet(f"{DATA_DIR}{path}")
+
+
+def _xy(df, spec, classes=None):
+    """Split a DataFrame into (X, y, classes) for one spec.
+    Drops rows with a missing target, sorts by time_column when one is given (required
+    for timeseries CV), and removes drop_columns. For classification, y is encoded as
+    0..K-1 in `classes` order; `classes` defaults to the sorted labels of this df. Pass
+    the dev set's classes when encoding the hidden set, so both share one encoding;
+    rows whose label is not in `classes` are dropped. For regression, y is float and
+    `classes` is None."""
+    import pandas as pd
+
     target = spec["target"]
     df = df.dropna(subset=[target])
     if spec.get("time_column") and spec["time_column"] in df.columns:
-        df = df.sort_values(spec["time_column"]).reset_index(drop=True)
-    y = df[target]
+        df = df.sort_values(spec["time_column"], kind="stable").reset_index(drop=True)
     X = _clean(df.drop(columns=[target, *spec.get("drop_columns", [])], errors="ignore"))
-    classes = None
-    if spec["task"] == "classification":
-        from sklearn.preprocessing import LabelEncoder
-
-        le = LabelEncoder()
-        y = le.fit_transform(y.astype(str))
-        classes = le.classes_.tolist()
-    else:
-        y = y.astype(float).values
-    return X, y, classes
+    if spec["task"] != "classification":
+        return X, df[target].astype(float).to_numpy(), None
+    labels = df[target].astype(str)
+    classes = classes or sorted(labels.unique().tolist())
+    codes = pd.Categorical(labels, categories=classes).codes
+    keep = codes >= 0
+    return X[keep].reset_index(drop=True), codes[keep].astype(int), classes
 
 
 def _build_pipeline(X, spec):
@@ -170,16 +174,20 @@ def _build_pipeline(X, spec):
 
 def _cv(spec):
     """Pick the CV splitter: TimeSeriesSplit for cv="timeseries" (no shuffling, so
-    rows must already be in time order), otherwise a shuffled, seeded
-    StratifiedKFold for classification or KFold for regression."""
-    from sklearn.model_selection import KFold, StratifiedKFold, TimeSeriesSplit
+    rows must already be in time order; cv_repeats is ignored), otherwise a shuffled,
+    seeded (Repeated)StratifiedKFold for classification or (Repeated)KFold for
+    regression. The fixed seed gives every candidate the same folds, so per-fold
+    scores are paired across candidates."""
+    from sklearn.model_selection import (KFold, RepeatedKFold, RepeatedStratifiedKFold, StratifiedKFold,
+                                         TimeSeriesSplit)
 
-    k = spec.get("cv_folds", 5)
+    k, r = spec.get("cv_folds", 5), spec.get("cv_repeats", 1)
     if spec.get("cv") == "timeseries":
         return TimeSeriesSplit(n_splits=k)
-    if spec["task"] == "classification":
-        return StratifiedKFold(k, shuffle=True, random_state=SEED)
-    return KFold(k, shuffle=True, random_state=SEED)
+    strat = spec["task"] == "classification"
+    if r > 1:
+        return (RepeatedStratifiedKFold if strat else RepeatedKFold)(n_splits=k, n_repeats=r, random_state=SEED)
+    return (StratifiedKFold if strat else KFold)(k, shuffle=True, random_state=SEED)
 
 
 def _scoring(task, n_classes):
@@ -213,17 +221,25 @@ def _top_features(pipe, k=10):
         return []
 
 
-@app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1200)
-def train_candidate(spec: dict) -> dict:
-    """Cross-validate ONE candidate. Never raises: errors come back so the agent can react."""
-    import time
+def _failure(spec, e):
+    """Error result in the shape the agent expects, with a trimmed traceback."""
     import traceback
+
+    return {"name": spec.get("name"), "ok": False, "error": f"{type(e).__name__}: {e}",
+            "trace": traceback.format_exc()[-1500:]}
+
+
+def _train(df, spec):
+    """Cross-validate one candidate on df. Per metric: mean, std, train_mean, and the
+    per-fold test scores (`folds`, same fold order for every candidate, so they can
+    be compared pairwise). Error metrics are reported positive. Never raises."""
+    import time
 
     from sklearn.model_selection import cross_validate
 
     t0 = time.time()
     try:
-        X, y, classes = _load_xy(spec)
+        X, y, classes = _xy(df, spec)
         scoring = _scoring(spec["task"], len(classes) if classes else 0)
         res = cross_validate(
             _build_pipeline(X, spec), X, y, cv=_cv(spec), scoring=scoring,
@@ -234,12 +250,61 @@ def train_candidate(spec: dict) -> dict:
             sign = -1 if scorer.startswith("neg_") else 1
             val, tr = sign * res[f"test_{name}"], sign * res[f"train_{name}"]
             metrics[name] = {"mean": round(float(val.mean()), 5), "std": round(float(val.std()), 5),
-                             "train_mean": round(float(tr.mean()), 5)}
+                             "train_mean": round(float(tr.mean()), 5), "folds": [round(float(v), 6) for v in val]}
         return {"name": spec["name"], "ok": True, "metrics": metrics,
                 "n_rows": len(X), "fit_seconds": round(time.time() - t0, 1)}
     except Exception as e:
-        return {"name": spec.get("name"), "ok": False, "error": f"{type(e).__name__}: {e}",
-                "trace": traceback.format_exc()[-1500:]}
+        return _failure(spec, e)
+
+
+def _predict_holdout(dev, hidden, spec):
+    """Fit on dev, predict the hidden set once. Returns the hidden labels `y` (encoded
+    with the dev classes), `pred` (positive-class probability for binary, a probability
+    row per sample for multiclass, values for regression), fit seconds and predict ms
+    per 1k rows. Never raises."""
+    import time
+
+    import numpy as np
+
+    try:
+        X, y, classes = _xy(dev, spec)
+        Xh, yh, _ = _xy(hidden, spec, classes)
+        pipe = _build_pipeline(X, spec)
+        t0 = time.perf_counter()
+        pipe.fit(X, y)
+        fit_s = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        if spec["task"] == "classification":
+            pred = pipe.predict_proba(Xh)
+            pred = pred[:, 1] if pred.shape[1] == 2 else pred
+        else:
+            pred = pipe.predict(Xh)
+        ms_per_1k = (time.perf_counter() - t0) * 1000 * 1000 / max(len(Xh), 1)
+        return {"name": spec["name"], "ok": True, "y": np.asarray(yh).tolist(),
+                "pred": np.round(np.asarray(pred, dtype=float), 6).tolist(), "classes": classes,
+                "fit_seconds": round(fit_s, 2), "predict_ms_per_1k": round(ms_per_1k, 2)}
+    except Exception as e:
+        return _failure(spec, e)
+
+
+@app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1200)
+def train_candidate(spec: dict) -> dict:
+    """Cross-validate ONE candidate. Never raises: errors come back so the agent can react."""
+    try:
+        df = _read(spec["dataset_path"])
+    except Exception as e:
+        return _failure(spec, e)
+    return _train(df, spec)
+
+
+@app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1200)
+def predict_holdout(spec: dict, hidden_path: str) -> dict:
+    """Fit ONE candidate on the dev set (spec's dataset_path) and predict the hidden set."""
+    try:
+        dev, hidden = _read(spec["dataset_path"]), _read(hidden_path)
+    except Exception as e:
+        return _failure(spec, e)
+    return _predict_holdout(dev, hidden, spec)
 
 
 @app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1800)
@@ -249,7 +314,7 @@ def fit_final(spec: dict, run_id: str) -> dict:
 
     import joblib
 
-    X, y, classes = _load_xy(spec)
+    X, y, classes = _xy(_read(spec["dataset_path"]), spec)
     pipe = _build_pipeline(X, spec)
     pipe.fit(X, y)
     out_dir = f"{DATA_DIR}/models/{run_id}"
