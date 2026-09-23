@@ -16,6 +16,7 @@ import pandas as pd
 from modal_train import APP_NAME, MODEL_MENU, check_name, check_params, load_local
 from factory_tools import GPU_MODELS, HIGHER_IS_BETTER, PipelineTools, compact
 from providers import NebiusClient, ScriptedClient, parse_arguments, to_openai_tools
+from results_store import ResultsStore, candidate_row
 
 MAX_STEPS = 20
 MAX_NUDGES = 3
@@ -274,6 +275,7 @@ class FactoryRun(PipelineTools):
             "train_candidate", "train_candidate_gpu", "fit_final", "fit_final_gpu", "predict_holdout", "predict_holdout_gpu")}
         self.train_fn, self.final_fn = self.fns["train_candidate"], self.fns["fit_final"]
         self.supabase = _maybe_supabase()
+        self.store = ResultsStore(self.supabase, self.run_id)
         self.setup_pipeline(task_hint or self.profile["target"]["suggested_task"], purpose)
 
     # ---- event stream: stdout + jsonl (replay mode for the demo) + optional Supabase (live UI)
@@ -358,10 +360,11 @@ class FactoryRun(PipelineTools):
 
         t0 = time.time()
         hib = HIGHER_IS_BETTER[pm]
-        rows = []
+        rows, batch = [], []
         for r in self.train_fn.map(specs):
             r["round"] = self.rounds
             self.results.append(r)
+            batch.append(candidate_row(self.run_id, "experiment", self.specs.get(r["name"], {}), r, pm, rung=self.rounds))
             if not r["ok"]:
                 rows.append({"name": r["name"], "error": r["error"]})
                 continue
@@ -374,6 +377,7 @@ class FactoryRun(PipelineTools):
                 row["warning"] = "suspiciously_high_check_leakage"
             rows.append(row)
 
+        self.store.add_candidates(batch)
         ok = sorted([x for x in rows if pm in x], key=lambda x: x[pm], reverse=hib)
         leaderboard = ok + [x for x in rows if pm not in x]
         self.emit("leaderboard", {"round": self.rounds, "primary_metric": pm, "rows": leaderboard,
@@ -411,6 +415,11 @@ class FactoryRun(PipelineTools):
         write_report, or after MAX_STEPS, then always saves whatever was produced."""
         self.emit("run_start", {"dataset": self.dataset_name, "target": self.target,
                                 "rows": self.profile["n_rows"], "features": self.profile["n_features"]})
+        self.store.start_run(dataset_name=self.dataset_name, n_rows=len(self.df), n_features=self.profile["n_features"],
+                             target=self.target, task=self.task, purpose=self.purpose,
+                             llm_model=getattr(self.client, "model", "scripted"),
+                             split={"dev": len(self.dev_df), "search_val": len(self.val_df), "hidden": len(self.hidden_df)},
+                             profile={"findings": self.diag["findings"], "meta": self.diag["meta"]})
         hint = f" The user says this is a {self.task_hint} task." if self.task_hint else ""
         messages = [{"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": f"Dataset '{self.dataset_name}', target column '{self.target}'.{hint} "
@@ -452,9 +461,15 @@ class FactoryRun(PipelineTools):
             if self.report:
                 break
 
-        self.emit("usage", self.client.ledger.totals())
+        usage = self.client.ledger.totals()
+        self.emit("usage", usage)
         self.remember()
         self.save()
+        final, report = self.final or {}, self.report or {}
+        self.store.finish_run(status="completed" if self.report else "incomplete", task=self.task,
+                              primary_metric=(self.search or {}).get("pm"), recommended=final.get("name"),
+                              model_path=final.get("model_path"), report_md=report.get("markdown"),
+                              spoken_summary=report.get("spoken_summary"), usage=usage)
 
     def save(self):
         """Persist this run under runs/<run_id>_*: the full event timeline as jsonl

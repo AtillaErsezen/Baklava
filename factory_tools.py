@@ -20,6 +20,7 @@ import search_space as ss
 import stats_tests as st
 from export import export_bundle
 from modal_train import GPU_ENABLED, check_name, check_params, upload_dataset
+from results_store import candidate_row
 
 HIGHER_IS_BETTER = {"roc_auc": True, "f1_macro": True, "accuracy": True, "r2": True, "rmse": False, "mae": False}
 TASK_METRICS = {"classification": ("roc_auc", "f1_macro", "accuracy"), "regression": ("rmse", "mae", "r2")}
@@ -141,9 +142,13 @@ class PipelineTools:
         base = {"dataset_path": self._dev(), "target": self.target, "task": task, "cv": inp.get("cv", "kfold"),
                 "cv_folds": 5, "time_column": inp.get("time_column"), "drop_columns": inp.get("drop_columns") or []}
         by_name = {c["name"]: c for c in configs}
+        rung = [0]
 
         def evaluate(cfgs, n_rows):
+            rung[0] += 1
             res = self._map([self._spec(base, c, n_rows) for c in cfgs])
+            self.store.add_candidates([candidate_row(self.run_id, "race", by_name.get(r.get("name"), {}), r, pm,
+                                                     rung=rung[0], train_rows=n_rows) for r in res])
             return [{"name": r["name"], "ok": True, "folds": r["metrics"][pm]["folds"], "fit_seconds": r["fit_seconds"]}
                     if r.get("ok") else {"name": r.get("name"), "ok": False} for r in res]
 
@@ -207,6 +212,10 @@ class PipelineTools:
         for t in table:
             t["pareto"] = t["name"] in front
         table.sort(key=lambda t: -sign * t["cv_mean"])
+        self.store.add_candidates([candidate_row(
+            self.run_id, "confirm", self.search["by_name"][t["name"]], res[t["name"]], pm, train_rows=n,
+            p_vs_best=t["p_vs_best"], tie_with_best=t["tie_group"] == table[0]["tie_group"], hidden_score=t["hidden"],
+            hidden_p_vs_best=t["hidden_p_vs_best"], ece=t["ece"]) for t in table])
         self.confirmed = {"pm": pm, "rows": {t["name"]: t for t in table}, "pick": pick}
         out = {"primary_metric": pm, "table": table, "recommendation": pick, "tie_groups": groups,
                "notes": "p_vs_best: Nadeau-Bengio corrected t on 10 paired folds; hidden: one-shot holdout."}
