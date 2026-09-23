@@ -109,6 +109,7 @@ class PipelineTools:
         """Ranked findings + meta-features from the 33-check battery (precomputed, free)."""
         out = {"findings": self.diag["findings"], "meta": {k: _r(v, 3) for k, v in self.diag["meta"].items()},
                "rows": {"dev": len(self.dev_df), "search_val": len(self.val_df), "hidden_locked": len(self.hidden_df)}}
+        self.emit("diagnostics", {"findings": out["findings"], "rows": out["rows"]})
         if inp.get("response_format") == "detailed":
             out["catalog"] = dg.catalog()
         return out
