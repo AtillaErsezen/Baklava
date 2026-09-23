@@ -8,6 +8,7 @@ Harness tools for FactoryRun: the math decides, the LLM judges.
 Mixed into agent.FactoryRun; relies on self.df, self.target, self.emit, self.fns, self.specs.
 """
 import itertools
+import json
 import os
 import shutil
 
@@ -323,6 +324,62 @@ class PipelineTools:
             self.export["model_error"] = str(e)[:300]
         self.emit("export", self.export)
         return self.export
+
+    def fact_report(self, narrative: dict | None) -> dict:
+        """Report built only from what this run measured; the agent's own report, if it wrote one,
+        is appended as a narrative. Headings and bullets only (what the web UI renders)."""
+        pm = (self.search or self.confirmed or {}).get("pm")
+        sev = {3: "HIGH", 2: "REVIEW"}
+        out = [f"# Baklava report: {self.dataset_name}", "", "## Dataset", "",
+               f"- Rows: {len(self.df)} (dev {len(self.dev_df)}, search validation {len(self.val_df)}, "
+               f"locked holdout {len(self.hidden_df)})",
+               f"- Target: {self.target} ({self.task})"]
+        if self.purpose:
+            out.append(f"- Purpose: {self.purpose}")
+        out += ["", "## Data checks", ""]
+        out += [f"- {sev.get(f['severity'], 'INFO')}: {f['finding']}" for f in self.diag["findings"][:10]] \
+            or ["- No issues flagged."]
+        for e in (e for e in self.events if e["kind"] == "leaderboard"):
+            p, m = e["payload"], e["payload"]["primary_metric"]
+            title = "Search race: top candidates" if p["round"] == "race" else f"Experiment round {p['round']}"
+            out += ["", f"## {title} ({m})", ""]
+            for r in p["rows"]:
+                score = r.get("mean", r.get(m))
+                std = f" ± {_r(r['std'])}" if r.get("std") is not None else ""
+                out.append(f"- {r['name']}: failed ({r.get('error')})" if score is None else
+                           f"- {r['name']}: {_r(score)}{std}")
+        if self.confirmed:
+            pick = self.confirmed["pick"]
+            out += ["", f"## Finalists (10 paired folds, {pm})", ""]
+            for t in self.confirmed["rows"].values():
+                line = f"- {t['name']} ({t['family']}): CV {t['cv_mean']}, 95% CI {t['ci'][0]} to {t['ci'][1]}"
+                if t["hidden"] is not None:
+                    line += f", holdout {t['hidden']}"
+                if t["p_vs_best"] is not None:
+                    line += f", p vs best {_r(t['p_vs_best'], 3)}"
+                out.append(line)
+            out.append(f"- One-standard-error rule picked {pick['pick']} (best mean: {pick['best']}).")
+        out += ["", "## Chosen model", ""]
+        if self.final:
+            spec = self.final["spec"]
+            out += [f"- {self.final['name']}: {spec['model']}, trained on {self.final.get('n_rows')} rows",
+                    f"- Parameters: {json.dumps(spec.get('params') or {}, sort_keys=True)}"]
+            if spec.get("drop_columns"):
+                out.append(f"- Dropped columns: {', '.join(spec['drop_columns'])}")
+            feats = self.final.get("top_features") or []
+            if feats:
+                out.append("- Top features: " + ", ".join(f"{f['feature']} ({_r(f['importance'], 3)})" for f in feats[:5]))
+        else:
+            out.append("- The run ended before a final model was trained.")
+        if narrative and narrative.get("markdown"):
+            out += ["", "## Agent narrative", "", narrative["markdown"].strip()]
+        if narrative and narrative.get("spoken_summary"):
+            summary = narrative["spoken_summary"]
+        elif self.final:
+            summary = f"Recommended {self.final['name']} ({self.final['spec']['model']})."
+        else:
+            summary = "The run ended before a final model was trained."
+        return {"markdown": "\n".join(out) + "\n", "spoken_summary": summary}
 
     def remember(self) -> None:
         if self.search:

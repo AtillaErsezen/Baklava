@@ -102,6 +102,18 @@ def test_scripted_run_end_to_end_exports_user_model():
     assert run.final and run.export and all(k in run.export for k in ("script", "params", "card", "model"))
     with zipfile.ZipFile(run.export["zip"]) as z:
         assert "model.joblib" in z.namelist() and "MODEL_CARD.md" in z.namelist()
+    md = run.report["markdown"]
+    for section in ("## Data checks", "## Search race", "## Finalists", "## Chosen model", "## Agent narrative"):
+        assert section in md, section
+    assert f"- {run.final['name']}: " in md and "refund_issued" in md
+    assert [e for e in run.events if e["kind"] == "report"][-1]["payload"] == run.report
+
+
+def test_fact_report_without_agent_report_or_model():
+    run, _ = make_run()
+    report = run.fact_report(None)
+    assert "ended before a final model" in report["markdown"] and "Agent narrative" not in report["markdown"]
+    assert report["spoken_summary"]
 
 
 

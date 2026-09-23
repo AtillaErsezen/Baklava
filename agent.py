@@ -461,12 +461,15 @@ class FactoryRun(PipelineTools):
             if self.report:
                 break
 
+        agent_wrote = self.report is not None
+        self.report = self.fact_report(self.report)  # measured facts first, agent narrative appended
+        self.emit("report", self.report)
         usage = self.client.ledger.totals()
         self.emit("usage", usage)
         self.remember()
         self.save()
-        final, report = self.final or {}, self.report or {}
-        self.store.finish_run(status="completed" if self.report else "incomplete", task=self.task,
+        final, report = self.final or {}, self.report
+        self.store.finish_run(status="completed" if agent_wrote else "incomplete", task=self.task,
                               primary_metric=(self.search or {}).get("pm"), recommended=final.get("name"),
                               model_path=final.get("model_path"), report_md=report.get("markdown"),
                               spoken_summary=report.get("spoken_summary"), usage=usage)
