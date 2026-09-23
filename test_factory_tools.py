@@ -1,5 +1,7 @@
 """Offline checks of the harness tools: Modal stubbed with deterministic fold scores.
 Run: uv run python test_factory_tools.py"""
+from types import SimpleNamespace
+
 import numpy as np
 
 import agent
@@ -92,6 +94,23 @@ def test_scripted_run_end_to_end_exports_user_model():
     kinds = [e["kind"] for e in run.events]
     assert "rung" in kinds and "confirm" in kinds and kinds[-1] == "usage"
     assert run.final and run.export and all(k in run.export for k in ("script", "params", "card"))
+
+
+
+def test_model_that_stops_early_is_nudged_to_continue():
+    run, _ = make_run()
+    real = run.client.chat
+    state = {"stalled": False}
+
+    def stall_once(messages, tools, **kw):  # like Qwen: narrates a plan, calls no tool
+        if run.search is None and not state["stalled"] and any(m["role"] == "tool" for m in messages):
+            state["stalled"] = True
+            return SimpleNamespace(content="I will now run the search.", tool_calls=None), "stop"
+        return real(messages, tools, **kw)
+
+    run.client.chat = stall_once
+    run.run()
+    assert state["stalled"] and run.report, "run ended at the stall instead of finishing"
 
 
 if __name__ == "__main__":

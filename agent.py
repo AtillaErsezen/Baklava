@@ -18,6 +18,9 @@ from factory_tools import GPU_MODELS, HIGHER_IS_BETTER, PipelineTools, compact
 from providers import NebiusClient, ScriptedClient, parse_arguments, to_openai_tools
 
 MAX_STEPS = 20
+MAX_NUDGES = 3
+NUDGE = ("Continue: make the next tool call now. Do not describe it, call it. The run ends only when "
+         "write_report has been called.")
 MAX_ROUNDS = 3
 MAX_CANDIDATES = 8
 TOKEN_BUDGET = 40_000
@@ -413,6 +416,7 @@ class FactoryRun(PipelineTools):
                     {"role": "user", "content": f"Dataset '{self.dataset_name}', target column '{self.target}'.{hint} "
                                                 "Build the best model you can. Start with diag_summary." + (f" Purpose: {self.purpose}" if self.purpose else "")}]
         schemas = {t["name"]: t["input_schema"] for t in TOOLS}
+        nudges = 0
 
         for _ in range(MAX_STEPS):
             msg, finish = self.client.chat(compact(messages), OPENAI_TOOLS)
@@ -425,7 +429,11 @@ class FactoryRun(PipelineTools):
             if msg.content and msg.content.strip():
                 self.emit("thought", {"text": msg.content})
             if not calls:
-                break
+                if self.report or nudges >= MAX_NUDGES:
+                    break
+                nudges += 1  # open-weight models often narrate the next step, then stop without calling it
+                messages.append({"role": "user", "content": NUDGE})
+                continue
 
             for call in calls:
                 name = call.function.name
