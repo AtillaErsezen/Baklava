@@ -89,9 +89,9 @@ def _call(i: int, name: str, args: dict):
 
 
 class ScriptedClient:
-    """Stand-in for an LLM: replays profile -> one experiment round (every menu model,
-    flagged columns dropped) -> finalize the top row -> report -> stop. Everything else
-    (Modal, events, saving) runs for real, so the pipeline can be tested without a key."""
+    """Stand-in for an LLM: replays diag_summary -> run_search (flagged columns dropped) ->
+    confirm_and_test -> finalize the 1-SE pick -> report -> stop. Everything else (Modal,
+    statistics, events, export) runs for real, so the pipeline can be tested without a key."""
 
     def __init__(self, profile: dict, menu: dict):
         self.profile, self.menu, self.step = profile, menu, 0
@@ -103,19 +103,20 @@ class ScriptedClient:
         last = json.loads(messages[-1]["content"]) if messages[-1]["role"] == "tool" else None
         task = self.profile["target"]["suggested_task"]
         if self.step == 1:
-            name, args = "get_data_profile", {}
+            name, args = "diag_summary", {}
         elif self.step == 2:
             bad = {"id_like", "possible_leakage", "constant"}
-            name, args = "run_experiments", {
-                "rationale": "Dry run: every menu model with defaults, flagged columns dropped.",
+            name, args = "run_search", {
+                "rationale": "Scripted run: drop flagged columns, race the prior-ranked space.",
                 "task": task, "primary_metric": "roc_auc" if task == "classification" else "rmse",
-                "drop_columns": [c["name"] for c in self.profile["columns"] if bad & set(c.get("flags", []))],
-                "candidates": [{"name": m, "model": m} for m in self.menu[task]]}
+                "drop_columns": [c["name"] for c in self.profile["columns"] if bad & set(c.get("flags", []))]}
         elif self.step == 3:
-            name, args = "finalize_model", {"candidate_name": last["leaderboard"][0]["name"]}
+            name, args = "confirm_and_test", {}
         elif self.step == 4:
-            name, args = "write_report", {"markdown": f"# Dry run\n\n```json\n{json.dumps(last, indent=2)}\n```\n",
-                                          "spoken_summary": "Dry run complete."}
+            name, args = "finalize_model", {"candidate_name": last["recommendation"]["pick"]}
+        elif self.step == 5:
+            name, args = "write_report", {"markdown": f"# Scripted run\n\n```json\n{json.dumps(last, indent=2)}\n```\n",
+                                          "spoken_summary": "Scripted run complete."}
         else:
             return SimpleNamespace(content="", tool_calls=None), "stop"
-        return SimpleNamespace(content=f"(dry run) calling {name}", tool_calls=[_call(self.step, name, args)]), "tool_calls"
+        return SimpleNamespace(content=f"(scripted) calling {name}", tool_calls=[_call(self.step, name, args)]), "tool_calls"

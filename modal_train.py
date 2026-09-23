@@ -364,6 +364,17 @@ def train_candidate_gpu(spec: dict) -> dict:
 @app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1800)
 def fit_final(spec: dict, run_id: str) -> dict:
     """Fit the winner on all data, save it to the volume, return path + top features."""
+    return _fit_final(spec, run_id)
+
+
+@app.function(image=gpu_image, volumes={DATA_DIR: vol}, gpu="L4", cpu=4, memory=16384, timeout=1800)
+def fit_final_gpu(spec: dict, run_id: str) -> dict:
+    """fit_final for foundation models (tabicl) that need the GPU image."""
+    return _fit_final(spec, run_id)
+
+
+def _fit_final(spec, run_id):
+    """Body of fit_final / fit_final_gpu."""
     import os
 
     import joblib

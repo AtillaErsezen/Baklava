@@ -27,9 +27,7 @@ CSV/Parquet ──► agent.py (local) ─────────────�
 
 - **The budget is enforced in code**: at most 3 experiment rounds, 8 candidates per round,
   and 20 agent steps.
-- **Tools** the agent can call: `get_data_profile`, `inspect_column`, `run_experiments`,
-  `finalize_model`, `write_report`. Tool errors are returned to Claude, never raised, so it
-  can react to them.
+- **Tools** the agent can call: `diag_summary`, `diag_run` (33 statistical checks on the dev split), `run_search` (~3000 pipelines ranked by a benchmark prior, top 243 raced on sized subsamples), `confirm_and_test` (10 paired folds, corrected t / Bayesian tests, 1-SE pick, one hidden-holdout test, Pareto + Big-O), `data_search` / `data_try` (Tavily + measured enrich trial), `inspect_column`, `run_experiments`, `finalize_model` (also exports the user's own training script), `write_report`. Tool errors are returned to the model, never raised, so it can react to them. The hidden 20% split is locked before any diagnostic runs.
 - **Metrics**: classification uses `roc_auc`, `f1_macro` and `accuracy`; regression uses
   `rmse`, `mae` and `r2`. Each leaderboard row shows the validation mean ± std, the train
   mean, and an `overfit_gap`. It also warns `suspiciously_high_check_leakage` when
@@ -59,7 +57,7 @@ uv run modal run modal_train.py --csv data/houses.csv --target SalePrice --task 
 uv run modal deploy modal_train.py
 
 # 3) Agent
-uv run --env-file .env agent.py data/churn.csv --target Churn
+uv run --env-file .env agent.py data/churn.csv --target Churn --purpose "flag likely churners, explainable"
 uv run --env-file .env agent.py data/houses.csv --target SalePrice --task regression
 
 # No API key? Scripted stand-in for the LLM; everything else (Modal, events, saving) is real

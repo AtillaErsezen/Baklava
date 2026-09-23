@@ -37,10 +37,10 @@ def test_scripted_client_openai_shape():
                "columns": [{"name": "id", "flags": ["id_like"]}, {"name": "x", "flags": []}]}
     client = ScriptedClient(profile, menu={"classification": ["logreg"], "regression": ["ridge"]})
     msg, finish = client.chat([{"role": "user", "content": "go"}], tools=[])
-    assert finish == "tool_calls" and msg.tool_calls[0].function.name == "get_data_profile"
+    assert finish == "tool_calls" and msg.tool_calls[0].function.name == "diag_summary"
     msg, _ = client.chat([{"role": "tool", "content": json.dumps(profile)}], tools=[])
     args = json.loads(msg.tool_calls[0].function.arguments)
-    assert msg.tool_calls[0].function.name == "run_experiments" and args["drop_columns"] == ["id"]
+    assert msg.tool_calls[0].function.name == "run_search" and args["drop_columns"] == ["id"]
 
 
 if __name__ == "__main__":
