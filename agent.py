@@ -1,23 +1,21 @@
 """
-ML Factory — Claude agent.
+ML Factory agent (open-weight LLM on Nebius Token Factory).
 
-  python agent.py data/churn.csv --target Churn
-  python agent.py data/houses.csv --target SalePrice --task regression
+  uv run --env-file .env agent.py data/churn.csv --target Churn
+  uv run --env-file .env agent.py data/houses.csv --target SalePrice --task regression
+  uv run agent.py data/churn.csv --target Churn --provider scripted   # no API key
 """
 import argparse
 import json
 import os
 import time
 import uuid
-from types import SimpleNamespace
-
-import anthropic
 import modal
 import pandas as pd
 
 from modal_train import APP_NAME, MODEL_MENU, load_local, upload_dataset
+from providers import NebiusClient, ScriptedClient, parse_arguments, to_openai_tools
 
-MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
 MAX_STEPS = 20
 MAX_ROUNDS = 3
 MAX_CANDIDATES = 8
@@ -122,6 +120,9 @@ TOOLS = [
 ]
 
 
+OPENAI_TOOLS = to_openai_tools(TOOLS)
+
+
 # ------------------------------------------------------------------ data profiling (local, cheap)
 
 def _r(v):
@@ -202,46 +203,6 @@ def profile_data(df: pd.DataFrame, target: str) -> dict:
     }
 
 
-# ------------------------------------------------------------------ dry run (no API key)
-
-class ScriptedClient:
-    """Stand-in for anthropic.Anthropic(): replays a fixed tool sequence so the whole pipeline
-    except Claude's reasoning (Modal, events, saving) can be tested without an API key."""
-
-    def __init__(self, profile):
-        self.profile, self.step, self.messages = profile, 0, self
-
-    def create(self, messages, **_):
-        """Mimic client.messages.create: return the next scripted tool call as a
-        response-shaped object (stop_reason + content blocks). Script: profile ->
-        one run_experiments round (every menu model, flagged columns dropped) ->
-        finalize the leaderboard's top row -> write_report -> end_turn. Later steps
-        read the previous tool result from `messages`. Other kwargs (model, tools...)
-        are ignored."""
-        self.step += 1
-        last = json.loads(messages[-1]["content"][0]["content"]) if self.step > 1 else None
-        task = self.profile["target"]["suggested_task"]
-        if self.step == 1:
-            name, inp = "get_data_profile", {}
-        elif self.step == 2:
-            bad = {"id_like", "possible_leakage", "constant"}
-            name, inp = "run_experiments", {
-                "rationale": "Dry run: every menu model with defaults, flagged columns dropped.",
-                "task": task, "primary_metric": "roc_auc" if task == "classification" else "rmse",
-                "drop_columns": [c["name"] for c in self.profile["columns"] if bad & set(c.get("flags", []))],
-                "candidates": [{"name": m, "model": m} for m in MODEL_MENU[task]]}
-        elif self.step == 3:
-            name, inp = "finalize_model", {"candidate_name": last["leaderboard"][0]["name"]}
-        elif self.step == 4:
-            name, inp = "write_report", {"markdown": f"# Dry run\n\n```json\n{json.dumps(last, indent=2)}\n```\n",
-                                         "spoken_summary": "Dry run complete."}
-        else:
-            return SimpleNamespace(stop_reason="end_turn", content=[])
-        return SimpleNamespace(stop_reason="tool_use", content=[
-            SimpleNamespace(type="text", text=f"(dry run) calling {name}"),
-            SimpleNamespace(type="tool_use", id=f"dry{self.step}", name=name, input=inp)])
-
-
 # ------------------------------------------------------------------ the agent
 
 def _maybe_supabase():
@@ -260,11 +221,11 @@ def _maybe_supabase():
 
 
 class FactoryRun:
-    """One end-to-end run: load data, profile it, drive the Claude agent loop through
+    """One end-to-end run: load data, profile it, drive the agent loop through
     its tools (profile/inspect/experiment/finalize/report), and save the result.
     One instance = one dataset + target; not reused across runs."""
 
-    def __init__(self, data_path: str, target: str, task_hint: str | None = None, dry_run: bool = False):
+    def __init__(self, data_path: str, target: str, task_hint: str | None = None, provider: str = "nebius"):
         """Load the dataset, validate the target column, and profile it up front so
         get_data_profile is a free tool call (no recomputation during the agent loop)."""
         self.run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
@@ -278,7 +239,7 @@ class FactoryRun:
         self.rounds = 0
         self.specs, self.results, self.events = {}, [], []
         self.final, self.report = None, None
-        self.client = ScriptedClient(self.profile) if dry_run else anthropic.Anthropic()
+        self.client = ScriptedClient(self.profile, MODEL_MENU) if provider == "scripted" else NebiusClient()
         self.train_fn = modal.Function.from_name(APP_NAME, "train_candidate")
         self.final_fn = modal.Function.from_name(APP_NAME, "fit_final")
         self.supabase = _maybe_supabase()
@@ -300,7 +261,7 @@ class FactoryRun:
 
     # ---- tools
     # Each tool_* method mirrors one entry in TOOLS and is dispatched by name from
-    # run(). All take the tool's `input` dict and return a JSON-serializable dict —
+    # run(). All take the tool's `input` dict and return a JSON-serializable dict -
     # never raise on bad input, return {"error": ...} instead so the agent can react.
 
     def tool_get_data_profile(self, _):
@@ -309,8 +270,8 @@ class FactoryRun:
         return self.profile
 
     def tool_inspect_column(self, inp):
-        """Drill into one column: dtype, sample values, value counts, and — for a
-        classification target — the target rate per value, to help the agent confirm
+        """Drill into one column: dtype, sample values, value counts, and: for a
+        classification target: the target rate per value, to help the agent confirm
         or rule out leakage/id-like columns flagged by the profile."""
         c = inp["column"]
         if c not in self.df.columns:
@@ -398,52 +359,57 @@ class FactoryRun:
 
     def tool_write_report(self, inp):
         """Store the agent's final markdown report and short spoken summary. Calling
-        this is also the loop's stop signal — `run()` breaks right after."""
+        this is also the loop's stop signal: `run()` breaks right after."""
         self.report = {"markdown": inp["markdown"], "spoken_summary": inp["spoken_summary"]}
         self.emit("report", self.report)
         return {"saved": True}
 
     # ---- loop
     def run(self):
-        """Drive the Claude tool-use loop: send the system prompt + task, stream any
-        text as `thought` events, dispatch each tool_use block to the matching
-        tool_* method, and feed results back as the next user turn. Stops when Claude
-        stops calling tools, when write_report has been called, or after MAX_STEPS —
-        then always saves whatever was produced."""
+        """Drive the tool-use loop in OpenAI chat format: stream assistant text as
+        `thought` events, dispatch each tool call to the matching tool_* method, and
+        send results back as role="tool" messages. Bad arguments go back to the model as
+        a tool error (it self-corrects). Stops when the model stops calling tools, after
+        write_report, or after MAX_STEPS, then always saves whatever was produced."""
         self.emit("run_start", {"dataset": self.dataset_name, "target": self.target,
                                 "rows": self.profile["n_rows"], "features": self.profile["n_features"]})
         hint = f" The user says this is a {self.task_hint} task." if self.task_hint else ""
-        messages = [{"role": "user", "content":
-                     f"Dataset '{self.dataset_name}', target column '{self.target}'.{hint} "
-                     "Build the best model you can. Start by reading the data profile."}]
+        messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Dataset '{self.dataset_name}', target column '{self.target}'.{hint} "
+                                                "Build the best model you can. Start by reading the data profile."}]
+        schemas = {t["name"]: t["input_schema"] for t in TOOLS}
 
         for _ in range(MAX_STEPS):
-            resp = self.client.messages.create(model=MODEL, max_tokens=4096, system=SYSTEM_PROMPT,
-                                               tools=TOOLS, messages=messages)
-            messages.append({"role": "assistant", "content": resp.content})
-            calls = []
-            for block in resp.content:
-                if block.type == "text" and block.text.strip():
-                    self.emit("thought", {"text": block.text})
-                elif block.type == "tool_use":
-                    calls.append(block)
-            if resp.stop_reason != "tool_use" or not calls:
+            msg, finish = self.client.chat(messages, OPENAI_TOOLS)
+            calls = msg.tool_calls or []
+            messages.append({"role": "assistant", "content": msg.content or "",
+                             **({"tool_calls": [{"id": c.id, "type": "function",
+                                                 "function": {"name": c.function.name,
+                                                              "arguments": c.function.arguments}}
+                                                for c in calls]} if calls else {})})
+            if msg.content and msg.content.strip():
+                self.emit("thought", {"text": msg.content})
+            if not calls:
                 break
 
-            tool_results = []
             for call in calls:
-                self.emit("tool_call", {"tool": call.name, "input": call.input})
-                try:
-                    out = getattr(self, f"tool_{call.name}")(call.input)
-                except Exception as e:
-                    out = {"error": f"{type(e).__name__}: {e}"}
-                tool_results.append({"type": "tool_result", "tool_use_id": call.id,
-                                     "content": json.dumps(out, default=str, ensure_ascii=False),
-                                     "is_error": "error" in out})
-            messages.append({"role": "user", "content": tool_results})
+                name = call.function.name
+                args, err = (None, f"unknown tool '{name}'. tools: {list(schemas)}") if name not in schemas \
+                    else parse_arguments(call.function.arguments, schemas[name])
+                self.emit("tool_call", {"tool": name, "input": args if args is not None else call.function.arguments})
+                if err:
+                    out = {"error": err}
+                else:
+                    try:
+                        out = getattr(self, f"tool_{name}")(args)
+                    except Exception as e:
+                        out = {"error": f"{type(e).__name__}: {e}"}
+                messages.append({"role": "tool", "tool_call_id": call.id,
+                                 "content": json.dumps(out, default=str, ensure_ascii=False, sort_keys=True)})
             if self.report:
                 break
 
+        self.emit("usage", self.client.ledger.totals())
         self.save()
 
     def save(self):
@@ -468,6 +434,7 @@ if __name__ == "__main__":
     ap.add_argument("data")
     ap.add_argument("--target", required=True)
     ap.add_argument("--task", choices=["classification", "regression"])
-    ap.add_argument("--dry-run", action="store_true", help="scripted agent, no Anthropic API key needed")
+    ap.add_argument("--provider", choices=["nebius", "scripted"], default="nebius")
+    ap.add_argument("--dry-run", action="store_true", help="alias for --provider scripted (no API key)")
     args = ap.parse_args()
-    FactoryRun(args.data, args.target, args.task, args.dry_run).run()
+    FactoryRun(args.data, args.target, args.task, "scripted" if args.dry_run else args.provider).run()

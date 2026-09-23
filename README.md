@@ -40,7 +40,7 @@ CSV/Parquet ──► agent.py (local) ─────────────�
 ```powershell
 uv sync                                   # creates .venv from uv.lock
 uv run modal setup                        # browser login, once
-$env:ANTHROPIC_API_KEY = "sk-ant-..."     # bash: export ANTHROPIC_API_KEY=...
+# .env (gitignored): NEBIUS_API_KEY=...  TAVILY_API_KEY=...  SUPABASE_URL=...  SUPABASE_KEY=...
 uv run make_demo_data.py                  # data/churn.csv, data/houses.csv
 ```
 
@@ -59,14 +59,14 @@ uv run modal run modal_train.py --csv data/houses.csv --target SalePrice --task 
 uv run modal deploy modal_train.py
 
 # 3) Agent
-uv run agent.py data/churn.csv --target Churn
-uv run agent.py data/houses.csv --target SalePrice --task regression
+uv run --env-file .env agent.py data/churn.csv --target Churn
+uv run --env-file .env agent.py data/houses.csv --target SalePrice --task regression
 
-# No Anthropic key? Scripted stand-in for Claude; everything else (Modal, events, saving) is real
+# No API key? Scripted stand-in for the LLM; everything else (Modal, events, saving) is real
 uv run agent.py data/churn.csv --target Churn --dry-run
 ```
 
-`CLAUDE_MODEL` overrides the model (default `claude-sonnet-5`).
+`AGENT_MODEL` overrides the Nebius model (default `Qwen/Qwen3-235B-A22B-Instruct-2507`). Open-weight models only.
 
 ## Outputs
 
