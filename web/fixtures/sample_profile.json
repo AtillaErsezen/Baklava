@@ -1,0 +1,324 @@
+{
+ "dataset_id": "fixture-churn",
+ "file_name": "churn.csv",
+ "profile": {
+  "rows": 3000,
+  "columns": [
+   {
+    "name": "customer_id",
+    "dtype": "int64",
+    "missing_pct": 0.0,
+    "n_unique": 3000,
+    "example": "100000"
+   },
+   {
+    "name": "tenure_months",
+    "dtype": "int64",
+    "missing_pct": 0.0,
+    "n_unique": 71,
+    "example": "7"
+   },
+   {
+    "name": "monthly_charges",
+    "dtype": "float64",
+    "missing_pct": 0.0,
+    "n_unique": 2521,
+    "example": "94.07"
+   },
+   {
+    "name": "contract",
+    "dtype": "str",
+    "missing_pct": 0.0,
+    "n_unique": 3,
+    "example": "one-year"
+   },
+   {
+    "name": "payment_method",
+    "dtype": "str",
+    "missing_pct": 0.0,
+    "n_unique": 4,
+    "example": "check"
+   },
+   {
+    "name": "support_tickets",
+    "dtype": "int64",
+    "missing_pct": 0.0,
+    "n_unique": 9,
+    "example": "1"
+   },
+   {
+    "name": "has_streaming",
+    "dtype": "bool",
+    "missing_pct": 0.0,
+    "n_unique": 2,
+    "example": "False"
+   },
+   {
+    "name": "last_login_days",
+    "dtype": "float64",
+    "missing_pct": 10.7,
+    "n_unique": 63,
+    "example": "21.0"
+   },
+   {
+    "name": "refund_issued",
+    "dtype": "int64",
+    "missing_pct": 0.0,
+    "n_unique": 2,
+    "example": "1"
+   },
+   {
+    "name": "Churn",
+    "dtype": "str",
+    "missing_pct": 0.0,
+    "n_unique": 2,
+    "example": "Yes"
+   }
+  ],
+  "preview": [
+   {
+    "customer_id": "100000",
+    "tenure_months": "7",
+    "monthly_charges": "94.07",
+    "contract": "one-year",
+    "payment_method": "check",
+    "support_tickets": "1",
+    "has_streaming": "False",
+    "last_login_days": "21.0",
+    "refund_issued": "1",
+    "Churn": "Yes"
+   },
+   {
+    "customer_id": "100001",
+    "tenure_months": "55",
+    "monthly_charges": "51.88",
+    "contract": "one-year",
+    "payment_method": "bank",
+    "support_tickets": "5",
+    "has_streaming": "True",
+    "last_login_days": "2.0",
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100002",
+    "tenure_months": "47",
+    "monthly_charges": "48.66",
+    "contract": "month-to-month",
+    "payment_method": "check",
+    "support_tickets": "1",
+    "has_streaming": "True",
+    "last_login_days": "4.0",
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100003",
+    "tenure_months": "32",
+    "monthly_charges": "81.49",
+    "contract": "one-year",
+    "payment_method": "check",
+    "support_tickets": "2",
+    "has_streaming": "True",
+    "last_login_days": "33.0",
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100004",
+    "tenure_months": "31",
+    "monthly_charges": "94.71",
+    "contract": "one-year",
+    "payment_method": "check",
+    "support_tickets": "0",
+    "has_streaming": "False",
+    "last_login_days": null,
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100005",
+    "tenure_months": "61",
+    "monthly_charges": "71.01",
+    "contract": "month-to-month",
+    "payment_method": "paypal",
+    "support_tickets": "1",
+    "has_streaming": "False",
+    "last_login_days": "12.0",
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100006",
+    "tenure_months": "7",
+    "monthly_charges": "37.84",
+    "contract": "two-year",
+    "payment_method": "check",
+    "support_tickets": "1",
+    "has_streaming": "True",
+    "last_login_days": "33.0",
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100007",
+    "tenure_months": "50",
+    "monthly_charges": "35.99",
+    "contract": "month-to-month",
+    "payment_method": "check",
+    "support_tickets": "2",
+    "has_streaming": "True",
+    "last_login_days": "10.0",
+    "refund_issued": "1",
+    "Churn": "Yes"
+   },
+   {
+    "customer_id": "100008",
+    "tenure_months": "15",
+    "monthly_charges": "34.32",
+    "contract": "month-to-month",
+    "payment_method": "bank",
+    "support_tickets": "0",
+    "has_streaming": "True",
+    "last_login_days": "4.0",
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100009",
+    "tenure_months": "7",
+    "monthly_charges": "25.81",
+    "contract": "two-year",
+    "payment_method": "paypal",
+    "support_tickets": "3",
+    "has_streaming": "False",
+    "last_login_days": "0.0",
+    "refund_issued": "1",
+    "Churn": "Yes"
+   },
+   {
+    "customer_id": "100010",
+    "tenure_months": "38",
+    "monthly_charges": "72.74",
+    "contract": "month-to-month",
+    "payment_method": "bank",
+    "support_tickets": "5",
+    "has_streaming": "False",
+    "last_login_days": "8.0",
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100011",
+    "tenure_months": "70",
+    "monthly_charges": "98.13",
+    "contract": "two-year",
+    "payment_method": "check",
+    "support_tickets": "2",
+    "has_streaming": "True",
+    "last_login_days": null,
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100012",
+    "tenure_months": "53",
+    "monthly_charges": "69.66",
+    "contract": "month-to-month",
+    "payment_method": "paypal",
+    "support_tickets": "6",
+    "has_streaming": "False",
+    "last_login_days": "3.0",
+    "refund_issued": "1",
+    "Churn": "Yes"
+   },
+   {
+    "customer_id": "100013",
+    "tenure_months": "55",
+    "monthly_charges": "15.0",
+    "contract": "month-to-month",
+    "payment_method": "bank",
+    "support_tickets": "0",
+    "has_streaming": "False",
+    "last_login_days": "5.0",
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100014",
+    "tenure_months": "51",
+    "monthly_charges": "65.23",
+    "contract": "month-to-month",
+    "payment_method": "card",
+    "support_tickets": "2",
+    "has_streaming": "False",
+    "last_login_days": null,
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100015",
+    "tenure_months": "56",
+    "monthly_charges": "65.93",
+    "contract": "one-year",
+    "payment_method": "card",
+    "support_tickets": "2",
+    "has_streaming": "False",
+    "last_login_days": "11.0",
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100016",
+    "tenure_months": "37",
+    "monthly_charges": "122.4",
+    "contract": "one-year",
+    "payment_method": "card",
+    "support_tickets": "2",
+    "has_streaming": "True",
+    "last_login_days": null,
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100017",
+    "tenure_months": "10",
+    "monthly_charges": "33.57",
+    "contract": "two-year",
+    "payment_method": "card",
+    "support_tickets": "3",
+    "has_streaming": "True",
+    "last_login_days": "0.0",
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100018",
+    "tenure_months": "60",
+    "monthly_charges": "60.23",
+    "contract": "two-year",
+    "payment_method": "check",
+    "support_tickets": "1",
+    "has_streaming": "True",
+    "last_login_days": null,
+    "refund_issued": "0",
+    "Churn": "No"
+   },
+   {
+    "customer_id": "100019",
+    "tenure_months": "32",
+    "monthly_charges": "112.65",
+    "contract": "one-year",
+    "payment_method": "bank",
+    "support_tickets": "0",
+    "has_streaming": "False",
+    "last_login_days": "1.0",
+    "refund_issued": "0",
+    "Churn": "No"
+   }
+  ],
+  "suggested_target": "Churn",
+  "suggested_task": "classification",
+  "time_columns": []
+ }
+}

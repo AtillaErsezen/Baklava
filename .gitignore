@@ -2,3 +2,7 @@
 runs/
 .venv/
 .env
+.env.*
+evals/data/
+evals/public/
+!.env.example

@@ -1,0 +1,29 @@
+# Full offline test suite on Windows, macOS and Linux (fresh clone, fresh venv).
+# Live Supabase tests skip themselves without SUPABASE_URL / SUPABASE_KEY; nothing here calls Modal or Nebius.
+name: tests
+
+on:
+  push:
+    branches: [main, Coflazo-Branch-N]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install (uv.lock, Python 3.13)
+        run: uv sync
+      - name: Golden eval datasets
+        run: uv run evals/make_golden.py
+      - name: Tests
+        run: uv run python -m pytest -q
+      - name: Scripted end-to-end agent run (no API keys, Modal stubbed)
+        run: uv run python test_factory_tools.py

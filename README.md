@@ -1,112 +1,99 @@
-# Baklava — ML Factory
+# Baklava: ML Factory
 
-Give it a tabular dataset and a target column. Claude profiles the data, plans experiments,
-cross-validates candidate models in parallel on Modal, picks the winner, and writes a report,
-the way a junior ML engineer would. Background, timeline and roles: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+Upload a tabular dataset, say in plain words what you want from it ("which customers will churn in the next 90
+days", "forecast weekly demand per store"), and an open-weight LLM agent on Nebius works out the ML task,
+checks the data with 33 statistical diagnostics, races thousands of candidate pipelines on statistically sized
+samples on Modal, confirms the finalists with paired tests, scores them once on a locked hidden set, and hands
+you a model trained on all of your data plus a script to retrain it yourself.
 
-## How it works
+The LLM judges and narrates; every number comes from deterministic code. Design notes: [docs/AGENT_PLAN.md](docs/AGENT_PLAN.md).
+Event contract for UIs: [docs/EVENTS.md](docs/EVENTS.md). Use-case catalog: [docs/USE_CASES.md](docs/USE_CASES.md).
+
+## Try it
+
+- Web app: **https://ml-factory-baklava.vercel.app** (also at https://atillaersezen--ml-factory-web-web.modal.run)
+- Access code: **DEMO**
+- Demo data: `data/demo/telco_churn.csv` (target `Churn`) or `data/demo/walmart_sales.csv` (target `Weekly_Sales`); goals to paste are in `data/demo/README.md`.
+
+## How a run works
 
 ```
-CSV/Parquet ──► agent.py (local) ──────────────────────────► Claude (tool use)
-                  │  profile_data: small JSON summary,         │ picks tools, models, params
-                  │  never raw rows                            │
-                  │◄───────────────────────────────────────────┘
-                  │
-                  ├─ upload_dataset ──► Modal volume ml-factory-data (/datasets/*.parquet)
-                  ├─ train_candidate.map(specs) ──► N containers in parallel, CV each candidate
-                  └─ fit_final ──► winner refit on all data ──► /models/<run_id>/<name>.joblib
+goal + CSV
+  -> use case match (59 researched use cases, TF-IDF, no tokens)      usecases.py, purpose.py
+  -> forecasting goals: leak-free lag / rolling / calendar features   forecasting.py
+  -> lock hidden 20% (latest rows if time-ordered)                     sampling.py
+  -> 33 diagnostics on dev only: leakage, ids, drift, imbalance ...    diagnostics.py
+  -> n* rows from Hoeffding / precision bounds + learning curve         sampling.py
+  -> ~3000 pipelines (AutoGluon 2025 portfolio + Sobol), prior-ranked  search_space.py
+  -> race top 243 on growing subsamples, drop by corrected t-test      racing.py  (Modal: modal_train.py)
+  -> top 3: 10 paired folds, Nadeau-Bengio + Bayesian ROPE, 1-SE pick  stats_tests.py
+  -> one hidden test (DeLong / McNemar / bootstrap), calibration, Pareto, Caruana ensemble check (ensemble.py)
+  -> refit on ALL rows, export script + params + model card            export.py
+  -> report built from tool results only, numbers claim-checked        report.py
 ```
 
-- **Claude never writes training code.** It only picks a model name and constructor params
-  from a fixed menu (`ESTIMATORS` in [modal_train.py](modal_train.py)):
+Models on the menu: logistic/ridge, random forest, LightGBM, XGBoost, CatBoost, MLP (TabICL when the Modal
+workspace has GPU billing, `ML_FACTORY_GPU=1`). Metrics: roc_auc, f1_macro, accuracy; rmse, mae, r2.
 
-  | Task | Models |
-  |---|---|
-  | classification | `logreg`, `random_forest`, `lightgbm`, `xgboost`, `mlp` |
-  | regression | `ridge`, `random_forest`, `lightgbm`, `xgboost`, `mlp` |
+## Setup (Windows, macOS, Linux)
 
-- **The budget is enforced in code**: at most 3 experiment rounds, 8 candidates per round,
-  and 20 agent steps.
-- **Tools** the agent can call: `get_data_profile`, `inspect_column`, `run_experiments`,
-  `finalize_model`, `write_report`. Tool errors are returned to Claude, never raised, so it
-  can react to them.
-- **Metrics**: classification uses `roc_auc`, `f1_macro` and `accuracy`; regression uses
-  `rmse`, `mae` and `r2`. Each leaderboard row shows the validation mean ± std, the train
-  mean, and an `overfit_gap`. It also warns `suspiciously_high_check_leakage` when
-  `roc_auc`, `accuracy` or `r2` is above 0.995.
+Needs [uv](https://docs.astral.sh/uv/). Python 3.13 is installed by uv.
 
-## Setup
-
-```powershell
-uv sync                                   # creates .venv from uv.lock
-uv run modal setup                        # browser login, once
-$env:ANTHROPIC_API_KEY = "sk-ant-..."     # bash: export ANTHROPIC_API_KEY=...
-uv run make_demo_data.py                  # data/churn.csv, data/houses.csv
+```
+uv sync
+uv run modal setup                  # browser login once (or put MODAL_TOKEN_ID / MODAL_TOKEN_SECRET in .env)
+copy .env.example .env              # Windows;  macOS/Linux: cp .env.example .env
 ```
 
-The Modal image pins the same pandas and pyarrow versions as `uv.lock`, because the parquet
-file is written locally and read on Modal. If you bump either one in `pyproject.toml`, bump it
-in `modal_train.py` too.
+Fill `.env` (it is gitignored): `NEBIUS_API_KEY`, `TAVILY_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY` (secret, backend
+only), `SUPABASE_PUBLISHABLE_KEY` (browser), `ACCESS_CODE` (gates the web app), `AGENT_MODEL`, `ML_FACTORY_GPU`.
+Supabase schema: run [docs/supabase.sql](docs/supabase.sql) once in the SQL editor.
 
 ## Run
 
-```powershell
-# 1) Backend smoke test, no agent: every model in the menu, default params, 3-fold CV
-uv run modal run modal_train.py --csv data/churn.csv --target Churn
-uv run modal run modal_train.py --csv data/houses.csv --target SalePrice --task regression
+```
+# training backend (deploy once per change of modal_train.py)
+uv run --env-file .env modal deploy modal_train.py
+uv run --env-file .env modal run modal_train.py --csv data/churn.csv --target Churn     # smoke test, every model
 
-# 2) Deploy: the agent looks up the deployed functions by app name
-uv run modal deploy modal_train.py
+# the agent from the command line
+uv run --env-file .env agent.py data/churn.csv --target Churn --purpose "flag likely churners early; explainable is a plus"
+uv run agent.py data/churn.csv --target Churn --dry-run      # no API keys: scripted LLM, real Modal
 
-# 3) Agent
-uv run agent.py data/churn.csv --target Churn
-uv run agent.py data/houses.csv --target SalePrice --task regression
-
-# No Anthropic key? Scripted stand-in for Claude; everything else (Modal, events, saving) is real
-uv run agent.py data/churn.csv --target Churn --dry-run
+# the web app (upload, dataset check, live run, results, download)
+uv run --env-file .env modal secret create ml-factory-env --from-dotenv .env --force   # drop MODAL_* lines first
+uv run --env-file .env modal deploy web_app.py
 ```
 
-`CLAUDE_MODEL` overrides the model (default `claude-sonnet-5`).
+`AGENT_MODEL` defaults to `Qwen/Qwen3-235B-A22B-Instruct-2507` (chosen by `scripts/probe_models.py`: 10/10 valid tool
+calls, lowest known price). Open-weight models only.
 
 ## Outputs
 
-| File | Contents |
+| Where | What |
 |---|---|
-| `runs/<run_id>_events.jsonl` | Every event, in order. Use it for replay mode. |
-| `runs/<run_id>_results.json` | Data profile, every candidate's CV results, the final model |
-| `runs/<run_id>_report.md` | Claude's markdown report |
-| Modal volume `/models/<run_id>/<name>.joblib` | `{"pipeline", "classes", "spec"}`, where `pipeline` is a fitted sklearn Pipeline |
+| `runs/<run_id>_events.jsonl` | every event in order (replay mode) |
+| `runs/<run_id>_report.md` | the report: dataset card, issues and fixes, search funnel, top models with CI / p / hidden / Big-O, recommendation, n* derivation, caveats, cost |
+| `runs/<run_id>_export/` | `train_<model>.py`, `params.json`, `MODEL_CARD.md`: the user's own model, retrainable anywhere |
+| Modal volume `/models/<run_id>/<name>.joblib` | the fitted pipeline, trained on every row |
+| Supabase `events`, `runs`, `candidates` | live feed, one row per run, one row per evaluated config (results_store.py) |
 
-## Events (live UI)
+## Tests
 
-Each event is `{run_id, ts, kind, payload}`. It is printed, saved to the jsonl, and inserted
-into Supabase if `SUPABASE_URL` / `SUPABASE_KEY` are set:
-
-| kind | payload |
-|---|---|
-| `run_start` | dataset, target, rows, features |
-| `thought` | Claude's plain-language reasoning before each tool call |
-| `tool_call` | tool name + input |
-| `status` | progress message (upload, final fit) |
-| `round_start` | round number, rationale, candidates |
-| `leaderboard` | ranked rows for the round, primary metric, wall time |
-| `final_model` | winner spec, model path, top features |
-| `report` | markdown + `spoken_summary` (≤60 words, for TTS) |
-
-Supabase table:
-
-```sql
-create table events (
-  id bigserial primary key,
-  run_id text, ts double precision, kind text, payload jsonb
-);
-alter publication supabase_realtime add table events;
+```
+uv run evals/make_golden.py          # golden datasets with planted leakage / drift / high cardinality
+uv run python -m pytest -q           # ~250 offline tests; live Supabase tests skip without keys
+uv run evals/run_golden.py --dry     # scored end-to-end runs with a scripted LLM (no cost)
+uv run --env-file .env evals/run_golden.py --sets all --repeat 3   # live: pass^3 over golden + 10 public datasets
 ```
 
-**Replay mode**: if the live demo fails, play a saved `runs/*_events.jsonl` into the UI in `ts` order.
+CI (`.github/workflows/tests.yml`) runs the suite on Windows, macOS and Linux. `test_windows.py` reproduces the
+Windows cp1252 console failure mode on any OS.
 
-## Files
+## Security
 
-- [modal_train.py](modal_train.py) — model menu, preprocessing, CV, and the Modal functions `train_candidate` / `fit_final`, plus the smoke-test entrypoint
-- [agent.py](agent.py) — data profiling, tool schemas, the Claude loop, the event stream, `--dry-run`
-- [make_demo_data.py](make_demo_data.py) — synthetic demo datasets, including a planted leakage column
+Keys only from `.env` / Modal Secrets. The web app requires `ACCESS_CODE`, caps uploads (CSV, 50 MB), limits
+concurrent runs and per-IP rates, validates every id, and sends a strict CSP. External data is fetched only from an
+allowlist of public dataset hosts with SSRF guards (pinned DNS, redirect re-checks, size caps, no pickle). Model
+parameters are allowlisted and size-capped; generated scripts escape all user text. The hidden split never reaches
+the LLM, and metric code is outside its reach.
