@@ -404,7 +404,9 @@ def create_app(spawn, status_store, storage_root: str, *, commit=None, refresh=N
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCES = ("agent", "factory_tools", "providers", "supabase_sync", "modal_train", "diagnostics", "sampling",
-           "search_space", "racing", "stats_tests", "memory", "export", "external_data")
+           "search_space", "racing", "stats_tests", "memory", "export", "external_data", "purpose", "report",
+           "ensemble", "forecasting", "usecases")
+SOURCES = tuple(m for m in SOURCES if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{m}.py")))
 RUNS_DIR = f"{DATA_DIR}/runs"
 WEB_DIR = "/root/web"
 
