@@ -24,7 +24,7 @@ DASHES = ("\u2014", "\u2013")
 def _run_script(spec: dict, csv: str, target: str, tmp: str) -> tuple[str, str]:
     """Render, write and run a script; return (stdout, joblib path)."""
     path = os.path.join(tmp, f"train_{spec['name']}.py")
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(render_train_script(spec, purpose="demo purpose"))
     out = os.path.join(tmp, "m.joblib")
     res = subprocess.run(
@@ -110,7 +110,7 @@ def test_export_bundle_writes_three_files() -> None:
         paths = export_bundle(CHURN_SPEC, {"cv_mean": 0.8}, tmp, purpose="p")
         assert len(paths) == 3 and all(os.path.exists(p) for p in paths.values())
         assert os.path.basename(paths["script"]) == "train_churn_logreg.py"
-        with open(paths["params"]) as f:
+        with open(paths["params"], encoding="utf-8") as f:
             data = json.load(f)
         assert data["spec"]["name"] == "churn_logreg" and data["metrics"]["cv_mean"] == 0.8
 

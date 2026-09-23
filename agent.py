@@ -8,6 +8,7 @@ ML Factory agent (open-weight LLM on Nebius Token Factory).
 import argparse
 import json
 import os
+import sys
 import time
 import uuid
 import modal
@@ -19,6 +20,12 @@ from providers import NebiusClient, ScriptedClient, parse_arguments, to_openai_t
 from results_store import ResultsStore, candidate_row
 import purpose as purpose_mod
 import report as report_mod
+
+# Windows consoles and redirected output default to cp1252; a character like "≥" in an LLM thought
+# must never crash a run through print(). Replace what the console cannot show instead.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="replace")
 
 MAX_STEPS = 20
 MAX_NUDGES = 3
@@ -500,7 +507,7 @@ class FactoryRun(PipelineTools):
         if self.report:
             with open(f"{prefix}_report.md", "w", encoding="utf-8") as f:
                 f.write(self.report["markdown"])
-        print(f"\nSaved → {prefix}_*")
+        print(f"\nSaved -> {prefix}_*")
 
 
 if __name__ == "__main__":

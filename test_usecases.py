@@ -8,8 +8,8 @@ from search_space import FAMILIES
 from usecases import TASK_KIND, TIMES, USE_CASES, leakage_suspects, match, suggest_target
 
 ROOT = Path(__file__).parent
-CHURN_COLS = next(csv.reader(open(ROOT / "data" / "churn.csv")))
-HOUSE_COLS = next(csv.reader(open(ROOT / "data" / "houses.csv")))
+CHURN_COLS = next(csv.reader(open(ROOT / "data" / "churn.csv", encoding="utf-8")))
+HOUSE_COLS = next(csv.reader(open(ROOT / "data" / "houses.csv", encoding="utf-8")))
 FIELDS = {"id", "name", "segments", "questions", "task", "target_hint", "unit", "time", "primary_metric",
           "leakage_patterns", "families_prior", "needed_columns"}
 DASHES = (chr(0x2014), chr(0x2013))
@@ -46,7 +46,7 @@ def test_entries_are_well_formed():
 
 
 def test_no_long_dashes_in_catalog_or_doc():
-    text = repr(USE_CASES) + (ROOT / "docs" / "USE_CASES.md").read_text() + (ROOT / "usecases.py").read_text()
+    text = repr(USE_CASES) + (ROOT / "docs" / "USE_CASES.md").read_text(encoding="utf-8") + (ROOT / "usecases.py").read_text(encoding="utf-8")
     assert not any(d in text for d in DASHES)
 
 

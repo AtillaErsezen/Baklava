@@ -205,16 +205,16 @@ def test_events_and_export_are_404_then_200(tmp_path, monkeypatch):
 
     runs = tmp_path / "runs"
     runs.mkdir()
-    (runs / f"{rid}_events.jsonl").write_text('{"kind": "run_start"}\n{"kind": "usage"}\n')
+    (runs / f"{rid}_events.jsonl").write_text('{"kind": "run_start"}\n{"kind": "usage"}\n', encoding="utf-8")
     r = client.get(f"/api/runs/{rid}/events")
     assert r.status_code == 200 and [e["kind"] for e in r.json()] == ["run_start", "usage"]
 
     export = runs / f"{rid}_export"
     (export / "sub").mkdir(parents=True)
-    (export / "MODEL_CARD.md").write_text("# card")
-    (export / "sub" / "nested.txt").write_text("skip me")
+    (export / "MODEL_CARD.md").write_text("# card", encoding="utf-8")
+    (export / "sub" / "nested.txt").write_text("skip me", encoding="utf-8")
     secret = tmp_path / "secret.txt"
-    secret.write_text("do not leak")
+    secret.write_text("do not leak", encoding="utf-8")
     os.symlink(secret, export / "link.txt")
     r = client.get(f"/api/runs/{rid}/export.zip")
     assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
@@ -255,7 +255,7 @@ def test_static_frontend_is_optional(tmp_path, monkeypatch):
     assert client.get("/api/config").status_code == 200
     site = tmp_path / "site"
     site.mkdir()
-    (site / "index.html").write_text("<h1>ML Factory</h1>")
+    (site / "index.html").write_text("<h1>ML Factory</h1>", encoding="utf-8")
     client, _, _ = _client(tmp_path, monkeypatch, web_dir=str(site))
     r = client.get("/")
     assert r.status_code == 200 and "ML Factory" in r.text and "content-security-policy" in r.headers

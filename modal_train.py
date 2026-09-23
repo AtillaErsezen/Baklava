@@ -568,4 +568,4 @@ def smoke(csv: str, target: str, task: str = "classification"):
     base = {"dataset_path": path, "target": target, "task": task, "cv_folds": 3}
     specs = [{**base, "name": m, "model": m} for m in MODEL_MENU[task]]
     for r in train_candidate.map(specs):
-        print(r["name"], "→", {k: v["mean"] for k, v in r["metrics"].items()} if r["ok"] else r["error"])
+        print(r["name"], "->", {k: v["mean"] for k, v in r["metrics"].items()} if r["ok"] else r["error"])

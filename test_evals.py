@@ -147,13 +147,13 @@ def test_golden_expectations_are_valid():
 # ---- fetch
 
 def test_fetch_skips_existing_file(tmp_path):
-    (tmp_path / "x.csv").write_text("a,y\n1,0\n")
+    (tmp_path / "x.csv").write_text("a,y\n1,0\n", encoding="utf-8")
 
     def boom(url, **kw):
         raise AssertionError("must not download an existing file")
 
     path, status = fetch_public.fetch("x", {"url": "https://openml.org/x.csv", "target": "y"}, str(tmp_path), boom)
-    assert status == "cached" and (tmp_path / "x.csv").read_text() == "a,y\n1,0\n" and path == str(tmp_path / "x.csv")
+    assert status == "cached" and (tmp_path / "x.csv").read_text(encoding="utf-8") == "a,y\n1,0\n" and path == str(tmp_path / "x.csv")
 
 
 def test_fetch_writes_new_file_and_rejects_missing_target(tmp_path):
