@@ -1,4 +1,21 @@
-"""Synthetic demo datasets -> data/. `uv run make_demo_data.py`"""
+"""
+Synthetic demo datasets for ML Factory, written to data/. Deterministic (seed 42).
+
+  uv run make_demo_data.py
+
+data/churn.csv   3000 rows, binary classification, target `Churn` (Yes/No, ~20% Yes).
+    Churn depends on monthly_charges, tenure_months, support_tickets and contract.
+    Built-in traps for the agent to catch:
+      - customer_id    unique integer per row -> profiled as `id_like`
+      - refund_issued  equals the churn label in 99% of rows (information from after the
+                       customer left) -> profiled as `possible_leakage`. Left in, it
+                       inflates CV scores to near-perfect.
+      - last_login_days  ~10% missing, exercises imputation
+
+data/houses.csv  2000 rows, regression, target `SalePrice`.
+    Price mainly depends on sqft times a neighborhood multiplier, minus age, plus bedrooms,
+    with Gaussian noise. lot_size (~15% missing) and garage are pure noise features.
+"""
 import os
 
 import numpy as np

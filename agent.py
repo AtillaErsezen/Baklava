@@ -212,6 +212,12 @@ class ScriptedClient:
         self.profile, self.step, self.messages = profile, 0, self
 
     def create(self, messages, **_):
+        """Mimic client.messages.create: return the next scripted tool call as a
+        response-shaped object (stop_reason + content blocks). Script: profile ->
+        one run_experiments round (every menu model, flagged columns dropped) ->
+        finalize the leaderboard's top row -> write_report -> end_turn. Later steps
+        read the previous tool result from `messages`. Other kwargs (model, tools...)
+        are ignored."""
         self.step += 1
         last = json.loads(messages[-1]["content"][0]["content"]) if self.step > 1 else None
         task = self.profile["target"]["suggested_task"]
