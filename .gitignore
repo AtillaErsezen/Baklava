@@ -4,3 +4,4 @@ runs/
 .env
 .env.*
 evals/data/
+evals/public/
