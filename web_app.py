@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 import modal
 import pandas as pd
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, Form, Header, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
@@ -43,6 +44,7 @@ PREVIEW_ROWS, PREVIEW_CHARS, EXAMPLE_CHARS = 20, 60, 40
 MAX_ACTIVE_RUNS = 3
 MAX_RUNS_PER_HOUR = 5            # per client ip
 MAX_UPLOADS_PER_HOUR = 20        # per client ip
+CORS_ORIGIN_REGEX = r"https://ml-factory-baklava(-[a-z0-9-]+)?\.vercel\.app"
 MAX_FAILED_CODES = 20            # wrong access codes per client ip per hour before a lockout
 MAX_READS_PER_WINDOW = 600       # status / events / export reads per client ip per READ_WINDOW_S (1 per second)
 READ_WINDOW_S = 600
@@ -310,6 +312,10 @@ def create_app(spawn, status_store, storage_root: str, *, commit=None, refresh=N
                "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"}
     api = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     api.add_middleware(_BodyCap, upload_cap=max_upload_bytes + FORM_OVERHEAD_BYTES)
+    # The Vercel-hosted copy of web/ calls this API directly (not through a proxy, so per-ip limits see real
+    # clients). Only that project's production and preview origins; no cookies are involved (the code is a header).
+    api.add_middleware(CORSMiddleware, allow_origin_regex=CORS_ORIGIN_REGEX, allow_methods=["GET", "POST"],
+                       allow_headers=["X-Access-Code", "Content-Type", "Accept"], max_age=600)
 
     @api.middleware("http")
     async def security_headers(request, call_next):

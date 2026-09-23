@@ -266,6 +266,17 @@ def test_security_headers_and_no_cors(tmp_path, monkeypatch):
     assert "content-security-policy" in client.get("/api/runs/nope-404").headers  # errors carry headers too
 
 
+def test_cors_only_for_the_vercel_frontend(tmp_path, monkeypatch):
+    """The Vercel-hosted frontend calls the API directly (so rate limits see real client ips); only its origins."""
+    client, _, _ = _client(tmp_path, monkeypatch)
+    for origin in ("https://ml-factory-baklava.vercel.app", "https://ml-factory-baklava-git-coflazo-x1y2.vercel.app"):
+        r = client.options("/api/runs", headers={"Origin": origin, "Access-Control-Request-Method": "POST",
+                                                 "Access-Control-Request-Headers": "content-type,x-access-code"})
+        assert r.headers.get("access-control-allow-origin") == origin, origin
+    evil = client.get("/api/config", headers={"Origin": "https://ml-factory-baklava.vercel.app.evil.com"})
+    assert "access-control-allow-origin" not in evil.headers
+
+
 def test_static_frontend_is_optional(tmp_path, monkeypatch):
     client, _, _ = _client(tmp_path, monkeypatch, web_dir=str(tmp_path / "missing"))
     assert client.get("/api/config").status_code == 200
