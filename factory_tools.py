@@ -8,17 +8,20 @@ Harness tools for FactoryRun: the math decides, the LLM judges.
 Mixed into agent.FactoryRun; relies on self.df, self.target, self.emit, self.fns, self.specs.
 """
 import numpy as np
+import pandas as pd
 from sklearn.metrics import (accuracy_score, f1_score, mean_absolute_error, mean_squared_error, r2_score,
                              roc_auc_score)
 
 import diagnostics as dg
 import ensemble as ens
 import external_data as xd
+import forecasting as fc
 import memory
 import racing
 import sampling
 import search_space as ss
 import stats_tests as st
+import usecases as uc
 from export import export_bundle
 from modal_train import GPU_ENABLED, check_name, check_params, upload_dataset
 
@@ -32,6 +35,7 @@ TOP_K = 3
 CONFIRM_REPEATS = 2  # 5-fold x 2 repeats = 10 paired folds
 ROPE = 0.005         # practical-equivalence band for the Bayesian test
 GPU_MODELS = {"tabicl"}
+USE_CASE_MIN_SCORE = 0.3  # TF-IDF + column match; below this the goal is too vague to steer the search
 COMPACT_KEEP = 2     # tool results kept verbatim in context; older ones are truncated
 # Modal list prices (modal.com/pricing, 2026-09): per core-second, per GiB-second, per L4-second.
 MODAL_CORE_S, MODAL_GIB_S, MODAL_L4_S = 0.0000131, 0.00000222, 0.000222
@@ -86,13 +90,17 @@ class PipelineTools:
     """Tool methods added to FactoryRun. Each takes the tool input dict and returns a JSON-able dict."""
 
     def setup_pipeline(self, task: str, purpose: str | None) -> None:
-        """Lock the hidden split first, then diagnose the dev split only."""
-        self.task, self.purpose = task, purpose
+        """Understand the goal, reshape forecasting data, lock the hidden split, then diagnose dev only."""
+        self.task, self.purpose, self.forecast = task, purpose, None
+        self.use_case = self._match_use_case(purpose)
+        if self.use_case and self.use_case.get("time") == "forecast":
+            self._to_forecast_table()
         self.time_column = sampling.sorted_time_column(self.df, self.target)
         idx = sampling.split_three(self.df, self.target, task, time_column=self.time_column)
         self.dev_df, self.val_df, self.hidden_df = (self.df.iloc[idx[k]] for k in ("dev", "search_val", "hidden"))
         self.ctx = dg.make_context(self.dev_df.reset_index(drop=True), self.target, task, time_column=self.time_column)
         self.diag = dg.run_all(self.ctx)
+        self._use_case_findings()
         dups = sampling.cross_split_duplicates(self.dev_df, self.hidden_df, self.target)
         if dups:
             self.diag["findings"].insert(0, {"check": "cross_split_duplicates", "severity": 2,
@@ -103,6 +111,46 @@ class PipelineTools:
         self.memory_path = None
         self.modal_seconds = {"cpu": 0.0, "gpu": 0.0}
         self.external = []
+
+    def _match_use_case(self, purpose: str | None) -> dict | None:
+        """Token-free goal understanding: best catalog use case if confident enough."""
+        if not purpose:
+            return None
+        hits = uc.match(purpose, [str(c) for c in self.df.columns], task_hint=self.task)
+        return hits[0] if hits and hits[0].get("score", 0) >= USE_CASE_MIN_SCORE else None
+
+    def _to_forecast_table(self) -> None:
+        """Forecasting goal: lag / rolling / calendar features with no look-ahead, audited before use."""
+        s = fc.detect_structure(self.df, self.target)
+        if not s.get("time_col"):
+            return
+        try:
+            frame, man = fc.make_supervised(self.df, self.target, s["time_col"], s["entity_cols"], horizon=1)
+            issues = fc.leakage_audit(frame, self.target, s["time_col"], raw=self.df, manifest=man)
+        except (ValueError, KeyError) as e:
+            self.forecast = {"skipped": f"{type(e).__name__}: {e}"[:200]}
+            return
+        if issues:
+            self.forecast = {"skipped": "leakage audit failed", "issues": issues[:5]}
+            return
+        self.forecast = {"structure": s, "manifest": man, "naive": fc.naive_baselines(frame, self.target, man)}
+        self.df, self.task = frame.reset_index(drop=True), "regression"
+        self.df[s["time_col"]] = pd.to_datetime(self.df[s["time_col"]])
+
+    def _use_case_findings(self) -> None:
+        """Surface use-case leakage suspects and the naive forecast bar as diagnostics findings."""
+        if self.use_case:
+            sus = [c for c in uc.leakage_suspects(self.use_case, [str(c) for c in self.dev_df.columns]) if c != self.target]
+            if sus:
+                self.diag["findings"].insert(0, {"check": "use_case_leakage", "severity": 2, "finding":
+                    f"For {self.use_case['name']}, columns like {sus[:4]} are usually known only after the outcome; "
+                    "confirm with inspect_column before training on them."})
+        naive = (self.forecast or {}).get("naive")
+        if naive and naive.get("best"):
+            b = naive[naive["best"]]
+            self.diag["findings"].append({"check": "naive_baseline", "severity": 1, "finding":
+                f"{naive['best'].replace('_', ' ')} baseline: MAE {b['mae']:.4g}, RMSE {b['rmse']:.4g} on the latest 20%. "
+                "A model only helps if it beats this."})
 
     # ---- plumbing
     def _dev(self) -> str:
@@ -141,6 +189,11 @@ class PipelineTools:
     def tool_diag_summary(self, inp):
         """Ranked findings + meta-features from the 33-check battery (precomputed, free)."""
         out = {"findings": self.diag["findings"], "meta": {k: _r(v, 3) for k, v in self.diag["meta"].items()},
+               "use_case": {k: self.use_case.get(k) for k in ("id", "name", "task", "time", "primary_metric", "score")}
+               if self.use_case else None,
+               "forecast": {"horizon": self.forecast["manifest"]["horizon"], "lags": self.forecast["manifest"]["lags"],
+                            "cv": "walk_forward", "time_column": self.forecast["manifest"]["time_col"]}
+               if (self.forecast or {}).get("manifest") else None,
                "rows": {"dev": len(self.dev_df), "search_val": len(self.val_df), "hidden_locked": len(self.hidden_df)},
                "split": f"time: latest 20% by {self.time_column}" if self.time_column else "random, stratified"}
         if self.purpose_spec:
@@ -170,12 +223,21 @@ class PipelineTools:
             if c.get("name") not in seen and c.get("model") in ss.FAMILIES[task] and _safe_config(c):
                 seen.add(c["name"])
                 pool.append(c)
+        weights = (self.use_case or {}).get("families_prior") or {}
+        if weights:  # the matched use case's typical winners get more of the race
+            pool = sorted(pool, key=lambda c: -(c.get("prior") or 0) * weights.get(c.get("family", c.get("model")), 1.0))
         configs = pool[:RACE_CONFIGS]
         sizing = sampling.choose_n(n_dev, len(configs))
         n_star = max(min(N_MIN, n_dev), sizing["n_star"])
         schedule = racing.rung_schedule(len(configs), min(N_MIN, n_star), n_star, eta=3, top_k=TOP_K)
-        base = {"dataset_path": self._dev(), "target": self.target, "task": task, "cv": inp.get("cv", "kfold"),
-                "cv_folds": 5, "time_column": inp.get("time_column"), "drop_columns": inp.get("drop_columns") or []}
+        man = (self.forecast or {}).get("manifest")
+        time_col = inp.get("time_column") or (man["time_col"] if man else self.time_column)
+        cv = inp.get("cv") or ("walk_forward" if time_col else "kfold")  # time-ordered data: never shuffle folds
+        base = {"dataset_path": self._dev(), "target": self.target, "task": task, "cv": cv, "cv_folds": 5,
+                "time_column": time_col,
+                "drop_columns": inp.get("drop_columns") or []}
+        if man and cv in ("walk_forward", "purged"):
+            base["gap"] = int(man.get("cv_gap_rows") or 0)
         by_name = {c["name"]: c for c in configs}
 
         rung_of = {r["n_rows"]: r["rung"] for r in schedule}
@@ -189,7 +251,8 @@ class PipelineTools:
                     if r.get("ok") else {"name": r.get("name"), "ok": False} for r in res]
 
         self.emit("search_plan", {"space": len(space), "raced": len(configs), "warm_start": len(warm),
-                                  "n_star": n_star, "schedule": schedule, "rationale": inp.get("rationale")})
+                                  "n_star": n_star, "schedule": schedule, "rationale": inp.get("rationale"),
+                                  "cv": base["cv"], "time_column": base["time_column"]})
         out = racing.race(configs, evaluate, schedule, higher_is_better=HIGHER_IS_BETTER[pm],
                           budget_fits=MAX_FITS, on_rung=lambda s: self.emit("rung", s))
         for t in out["top"]:

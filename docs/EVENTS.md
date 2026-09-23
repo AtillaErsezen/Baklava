@@ -15,7 +15,7 @@ does not know.
 | `thought` | before tool calls | `text`: the agent's plain-language narration (<= 2 sentences) |
 | `tool_call` | each tool call | `tool`, `input` (parsed arguments, or the raw string if invalid) |
 | `status` | progress notes | `msg` |
-| `search_plan` | start of `run_search` | `space` (pipelines generated), `raced` (configs raced), `warm_start`, `n_star`, `schedule` [{`rung`, `n_rows`, `keep`}], `rationale` |
+| `search_plan` | start of `run_search` | `space` (pipelines generated), `raced` (configs raced), `warm_start`, `n_star`, `schedule` [{`rung`, `n_rows`, `keep`}], `rationale`, `cv` (scheme used), `time_column` |
 | `rung` | after each racing rung | `rung`, `n_rows`, `evaluated`, `survivors`, `dropped_stat`, `dropped_rank`, `leader`, `leader_mean`, `tau` |
 | `leaderboard` | after a race or an experiment round | `round` ("race" or a number), `primary_metric`, `rows` [{`name`, `family`?, `mean` or metric, `std`, `params`?}] |
 | `round_start` | `run_experiments` only | `round`, `rationale`, `candidates` [{`name`, `model`, `params`}] |

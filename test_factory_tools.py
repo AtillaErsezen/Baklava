@@ -7,7 +7,7 @@ import numpy as np
 import agent
 
 # true mean per family: the fake backend makes lightgbm best, logreg a close second
-TRUE = {"lightgbm": 0.86, "logreg": 0.855, "catboost": 0.84, "xgboost": 0.83, "random_forest": 0.82,
+TRUE = {"ridge": 0.84, "lightgbm": 0.86, "logreg": 0.855, "catboost": 0.84, "xgboost": 0.83, "random_forest": 0.82,
         "mlp": 0.78, "tabicl": 0.80}
 
 
@@ -23,7 +23,7 @@ class FakeFn:
         folds = (TRUE[s["model"]] + rng.normal(0, 0.02 * np.sqrt(500 / n), k)).round(5).tolist()
         m = {"mean": float(np.mean(folds)), "std": float(np.std(folds)), "train_mean": 0.9, "folds": folds}
         return {"name": s["name"], "ok": True, "fit_seconds": 0.01 * n / 500, "n_rows": n,
-                "metrics": {"roc_auc": m, "accuracy": m, "f1_macro": m}}
+                "metrics": {"roc_auc": m, "accuracy": m, "f1_macro": m, "mae": m, "rmse": m, "r2": m}}
 
     def map(self, specs):
         return [self._one(s) for s in specs]
@@ -125,6 +125,8 @@ def test_sorted_datetime_column_gives_a_time_split(tmp="runs/_time.csv"):
     run = agent.FactoryRun(tmp, "y", provider="scripted")
     assert run.time_column == "when"
     assert run.hidden_df["when"].min() > run.dev_df["when"].max()  # hidden = the latest rows
+    run.tool_run_search({"rationale": "t", "task": "classification", "primary_metric": "roc_auc"})
+    assert run.search["base"]["cv"] == "walk_forward" and run.search["base"]["time_column"] == "when"
 
 
 def test_hidden_rows_repeating_dev_rows_are_flagged(tmp="runs/_dup.csv"):
@@ -175,6 +177,28 @@ def test_predictions_use_the_requested_split_not_hidden():
     spec = run.specs[run.search["top"][0]["name"]]
     run._predict([spec], "/datasets/search_val.parquet")
     assert fns["predict_holdout"].paths[-1] == "/datasets/search_val.parquet"
+
+
+
+def test_goal_maps_to_a_use_case():
+    run, _ = make_run()  # purpose: "find churners, explainable is a plus"
+    assert run.use_case and run.use_case["id"] == "customer_churn"
+    assert run.tool_diag_summary({})["use_case"]["id"] == "customer_churn"
+
+
+def test_forecasting_goal_builds_a_leak_free_supervised_table():
+    import os
+    if not os.path.exists("evals/data/drifting_sales.csv"):
+        import subprocess
+        subprocess.run(["uv", "run", "evals/make_golden.py"], check=True)
+    agent.modal.Function.from_name = lambda app, name: FakeFn(name)
+    run = agent.FactoryRun("evals/data/drifting_sales.csv", "units", provider="scripted",
+                           purpose="forecast daily units sold for the next day")
+    assert run.forecast and run.task == "regression" and "units_lag1" in run.df.columns
+    assert run.time_column == "date" and run.hidden_df["date"].min() > run.dev_df["date"].max()
+    assert any(f["check"] == "naive_baseline" for f in run.diag["findings"])
+    out = run.tool_run_search({"rationale": "t", "task": "regression", "primary_metric": "mae"})
+    assert run.search["base"]["cv"] == "walk_forward" and run.search["base"]["time_column"] == "date"
 
 
 if __name__ == "__main__":

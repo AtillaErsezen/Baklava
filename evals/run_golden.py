@@ -5,7 +5,7 @@
 Checks per run, all read from the event stream (docs/EVENTS.md):
   finding  the expected check is in the `diagnostics` findings (n/a when none is expected)
   drops    every must_drop column is in drop_columns of the last run_search call (n/a when none)
-  cv       that call's cv (default kfold) is one of the allowed schemes
+  cv       the cv scheme actually used (search_plan event; else the call's cv, default kfold) is allowed
   pick     the shipped model (final_model, else confirm.recommendation.pick) is in tie group 0 or has the
            best hidden score in the `confirm` table
   claims   the report has no "[number removed" marker, so the claim check stripped nothing
@@ -95,7 +95,9 @@ def score(events: list[dict], expect: dict) -> dict:
     checks = {
         "finding": None if want is None else any(w in fired for w in _allowed(want)),
         "drops": None if not must else search is not None and set(must) <= set(search.get("drop_columns") or []),
-        "cv": search is not None and search.get("cv", "kfold") in _allowed(expect["cv"]),
+        # the scheme the harness actually used (search_plan), else the LLM's request, else the kfold default
+        "cv": ((_last(events, "search_plan") or {}).get("cv") or (search or {}).get("cv") or "kfold")
+        in _allowed(expect["cv"]) if search is not None else False,
         "pick": _pick_ok(_last(events, "confirm"), _last(events, "final_model")),
         "claims": report is not None and REMOVED_MARK not in f"{report.get('markdown')}{report.get('spoken_summary')}",
     }
