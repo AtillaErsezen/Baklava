@@ -3,3 +3,4 @@ runs/
 .venv/
 .env
 .env.*
+evals/data/

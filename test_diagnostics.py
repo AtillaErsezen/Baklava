@@ -90,6 +90,17 @@ def test_run_all_churn():
     assert len(d.catalog()) >= 30
 
 
+
+def test_high_cardinality_alone_is_not_drift():
+    """~3 rows per level: halves separate by chance; the permutation null must absorb it."""
+    rng = np.random.default_rng(3)
+    n = 2800
+    df = pd.DataFrame({"provider": "P" + pd.Series(rng.integers(0, 900, n)).astype(str),
+                       "amount": rng.lognormal(7, 1, n), "y": rng.integers(0, 2, n)})
+    ctx = d.make_context(df, "y", "classification")
+    assert d.run_check("adversarial_drift", ctx)["severity"] == 0
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

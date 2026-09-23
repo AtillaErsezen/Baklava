@@ -87,7 +87,7 @@ class Context:
             elif pd.api.types.is_numeric_dtype(s):
                 out[c] = s.astype(float).fillna(s.median() if s.notna().any() else 0)
             else:
-                out[c] = pd.Series(pd.factorize(s)[0], index=s.index).astype(float)
+                out[c] = pd.Series(pd.factorize(s, sort=True)[0], index=s.index).astype(float)  # sorted codes: order of appearance would leak row position
         return pd.DataFrame(out, index=self.X.index)
 
     @cached_property
@@ -664,13 +664,18 @@ def adversarial_drift(ctx: Context, columns=None) -> dict:
     idx = _rows(ctx, SCORE_ROWS)
     X, y = e.iloc[idx], h[idx]
     rf = RandomForestClassifier(n_estimators=100, max_depth=6, min_samples_leaf=5, n_jobs=-1, random_state=ctx.seed)
-    p = cross_val_predict(rf, X, y, cv=StratifiedKFold(3, shuffle=True, random_state=ctx.seed), method="predict_proba")
-    auc = float(roc_auc_score(y, p[:, 1]))
+    cv = StratifiedKFold(3, shuffle=True, random_state=ctx.seed)
+    auc = float(roc_auc_score(y, cross_val_predict(rf, X, y, cv=cv, method="predict_proba")[:, 1]))
+    # Permutation null: shuffled half labels, same model and folds. High-cardinality columns let a forest
+    # separate random halves by chance (few rows per level); only AUC above this null counts as drift.
+    y0 = np.random.default_rng(ctx.seed).permutation(y)
+    null = float(roc_auc_score(y0, cross_val_predict(rf, X, y0, cv=cv, method="predict_proba")[:, 1]))
+    excess = auc - max(null, 0.5)
     top = _top(dict(zip(X.columns, rf.fit(X, y).feature_importances_)), 3)
-    sev = 3 if auc > 0.8 else 2 if auc > 0.7 else 1 if auc > 0.6 else 0
-    msg = f"Early and late rows differ (AUC {auc:.2f}), driven by {_names(top)}; use timeseries CV." if sev else \
-        f"No drift between halves (AUC {auc:.2f})."
-    return _out({"auc": auc, "top": top}, sev, msg)
+    sev = 3 if excess > 0.3 else 2 if excess > 0.2 else 1 if excess > 0.1 else 0
+    msg = (f"Early and late rows differ (AUC {auc:.2f} vs {null:.2f} for shuffled halves), driven by "
+           f"{_names(top)}; use timeseries CV.") if sev else f"No drift between halves (AUC {auc:.2f}, null {null:.2f})."
+    return _out({"auc": auc, "null_auc": null, "top": top}, sev, msg)
 
 
 @diagnostic("ks_drift_per_feature", "time", "KS test first vs second half per numeric feature, Holm-corrected count")
