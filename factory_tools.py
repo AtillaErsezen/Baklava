@@ -244,6 +244,7 @@ class PipelineTools:
         man = (self.forecast or {}).get("manifest")
         time_col = inp.get("time_column") or (man["time_col"] if man else self.time_column)
         cv = inp.get("cv") or ("walk_forward" if time_col else "kfold")  # time-ordered data: never shuffle folds
+        cv = {"timeseries": "walk_forward"}.get(cv, cv)  # one name for one scheme, so the forecast gap applies
         base = {"dataset_path": self._dev(), "target": self.target, "task": task, "cv": cv, "cv_folds": 5,
                 "time_column": time_col,
                 "drop_columns": inp.get("drop_columns") or []}

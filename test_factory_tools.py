@@ -132,6 +132,8 @@ def test_sorted_datetime_column_gives_a_time_split(tmp="runs/_time.csv"):
     assert run.hidden_df["when"].min() > run.dev_df["when"].max()  # hidden = the latest rows
     run.tool_run_search({"rationale": "t", "task": "classification", "primary_metric": "roc_auc"})
     assert run.search["base"]["cv"] == "walk_forward" and run.search["base"]["time_column"] == "when"
+    run.tool_run_search({"rationale": "t", "task": "classification", "primary_metric": "roc_auc", "cv": "timeseries"})
+    assert run.search["base"]["cv"] == "walk_forward"  # the LLM's alias is normalized (so the gap applies too)
 
 
 def test_hidden_rows_repeating_dev_rows_are_flagged(tmp="runs/_dup.csv"):
