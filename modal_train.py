@@ -130,11 +130,22 @@ def load_local(path: str):
         if len(sample) == 0 or sample.str.len().min() < 6:
             continue
         try:
-            if pd.to_datetime(sample, errors="coerce", format="mixed").notna().mean() > 0.9:
-                df[c] = pd.to_datetime(df[c], errors="coerce", format="mixed")
+            dayfirst = _day_first(sample)
+            if pd.to_datetime(sample, errors="coerce", format="mixed", dayfirst=dayfirst).notna().mean() > 0.9:
+                df[c] = pd.to_datetime(df[c], errors="coerce", format="mixed", dayfirst=dayfirst)
         except Exception:
             pass
     return df
+
+
+def _day_first(sample) -> bool:
+    """dd-mm-yyyy vs mm-dd-yyyy from the data: a first field above 12 means day-first (e.g. Walmart
+    '19-02-2010'); a second field above 12 means month-first. Ambiguous or ISO dates stay month-first."""
+    parts = sample.str.extract(r"^\s*(\d{1,2})[-/.](\d{1,2})[-/.]\d{2,4}")
+    if parts.isna().all().all():
+        return False
+    first, second = (parts[i].dropna().astype(int) for i in (0, 1))
+    return bool((first > 12).any() and not (second > 12).any())
 
 
 def upload_dataset(df) -> str:

@@ -211,6 +211,17 @@ def test_train_with_extra_rows_local(tmp_path=None):
     assert aug["metrics"]["roc_auc"]["folds"] != plain["metrics"]["roc_auc"]["folds"]
 
 
+
+def test_day_first_dates_are_parsed_as_day_first(tmp="runs/_dates.csv"):
+    import pandas as pd
+    pd.DataFrame({"Date": ["05-02-2010", "12-02-2010", "19-02-2010", "26-02-2010", "05-03-2010"],
+                  "y": [1, 2, 3, 4, 5]}).to_csv(tmp, index=False)
+    d = mt.load_local(tmp)["Date"]
+    assert list(d.dt.month) == [2, 2, 2, 2, 3] and d.is_monotonic_increasing  # Walmart-style dd-mm-yyyy
+    pd.DataFrame({"Date": ["02/05/2010", "02/19/2010", "03/05/2010"], "y": [1, 2, 3]}).to_csv(tmp, index=False)
+    assert list(mt.load_local(tmp)["Date"].dt.day) == [5, 19, 5]  # US mm/dd/yyyy stays month-first
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

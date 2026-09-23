@@ -76,10 +76,13 @@ def load(path: str) -> pd.DataFrame:
         sample = df[c].dropna().astype(str).head(200)
         if len(sample) == 0 or sample.str.len().min() < 6:
             continue
+        parts = sample.str.extract(r"^\\s*(\\d{1,2})[-/.](\\d{1,2})[-/.]\\d{2,4}")
+        first, second = (parts[i].dropna().astype(int) for i in (0, 1))
+        dayfirst = bool((first > 12).any() and not (second > 12).any())  # same rule as the agent
         try:
-            parsed = pd.to_datetime(sample, errors="coerce", format="mixed")
+            parsed = pd.to_datetime(sample, errors="coerce", format="mixed", dayfirst=dayfirst)
             if parsed.notna().mean() > 0.9:
-                df[c] = pd.to_datetime(df[c], errors="coerce", format="mixed")
+                df[c] = pd.to_datetime(df[c], errors="coerce", format="mixed", dayfirst=dayfirst)
         except (ValueError, TypeError):
             pass
     return df
