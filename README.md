@@ -1,4 +1,4 @@
-# Baklava — ML Factory
+# Baklava: ML Factory
 
 Give it a tabular dataset and a target column. Claude profiles the data, plans experiments,
 cross-validates candidate models in parallel on Modal, picks the winner, and writes a report,
@@ -105,6 +105,6 @@ alter publication supabase_realtime add table events;
 
 ## Files
 
-- [modal_train.py](modal_train.py) — model menu, preprocessing, CV, and the Modal functions `train_candidate` / `fit_final`, plus the smoke-test entrypoint
-- [agent.py](agent.py) — data profiling, tool schemas, the Claude loop, the event stream, `--dry-run`
-- [make_demo_data.py](make_demo_data.py) — synthetic demo datasets, including a planted leakage column
+- [modal_train.py](modal_train.py): model menu, preprocessing, CV, and the Modal functions `train_candidate` / `fit_final`, plus the smoke-test entrypoint
+- [agent.py](agent.py): data profiling, tool schemas, the Claude loop, the event stream, `--dry-run`
+- [make_demo_data.py](make_demo_data.py): synthetic demo datasets, including a planted leakage column
