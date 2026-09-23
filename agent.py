@@ -14,7 +14,7 @@ import modal
 import pandas as pd
 
 from modal_train import APP_NAME, MODEL_MENU, check_name, check_params, load_local
-from factory_tools import GPU_MODELS, HIGHER_IS_BETTER, PipelineTools, compact
+from factory_tools import DATA_TRY_SCHEMA_ADDITIONS, GPU_MODELS, HIGHER_IS_BETTER, PipelineTools, compact
 from providers import NebiusClient, ScriptedClient, parse_arguments, to_openai_tools
 from supabase_sync import SupabaseSync
 
@@ -76,12 +76,14 @@ TOOLS = [
     },
     {
         "name": "data_try",
-        "description": "Fetch one public csv/parquet, left-join its columns on a key, and measure base vs enriched "
-                       "with the current best config (paired test). Only a verdict of improves justifies a claim.",
+        "description": "Fetch one public csv/parquet and measure the current best config with vs without it (paired "
+                       "test). mode=enrich left-joins new columns on left_key/right_key; mode=more_rows adds same-schema "
+                       "rows to training folds only. Only a verdict of improves justifies a claim.",
         "input_schema": {"type": "object", "properties": {"url": {"type": "string"}, "left_key": {"type": "string"},
                                                           "right_key": {"type": "string"},
-                                                          "columns": {"type": "array", "items": {"type": "string"}}},
-                         "required": ["url", "left_key", "right_key"]},
+                                                          "columns": {"type": "array", "items": {"type": "string"}},
+                                                          **DATA_TRY_SCHEMA_ADDITIONS},
+                         "required": ["url"]},
     },
     {
         "name": "inspect_column",

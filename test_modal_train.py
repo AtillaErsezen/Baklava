@@ -172,6 +172,45 @@ def test_predict_holdout_local(tmp_path=None):
     assert set(r["pred"]) <= {0, 1} and all(0 <= p <= 1 for p in r["proba"])
 
 
+def test_augmented_folds_keep_extra_rows_out_of_test():
+    n_base, n_extra = 50, 17
+    folds = mt._augmented_folds(n_base, n_extra, KFold(5, shuffle=True, random_state=0).split(np.zeros(n_base)))
+    extra = set(range(n_base, n_base + n_extra))
+    assert len(folds) == 5
+    assert np.array_equal(np.sort(np.concatenate([te for _, te in folds])), np.arange(n_base))  # each base row once
+    for tr, te in folds:
+        assert extra <= set(tr) and not extra & set(te) and not set(tr) & set(te)
+        assert te.max() < n_base
+
+
+def test_train_with_extra_rows_local(tmp_path=None):
+    import os
+    import tempfile
+
+    tmp = str(tmp_path or tempfile.mkdtemp())
+    base = _local_xy(300)
+    extra = _local_xy(120).assign(y=lambda d: d["y"].where(d.index % 10 != 0, "maybe"))  # "maybe": extra only
+    os.makedirs(f"{tmp}/datasets")
+    extra.to_parquet(f"{tmp}/datasets/extra.parquet", index=False)
+    saved_xy, saved_dir = mt._load_xy, mt.DATA_DIR
+    mt._load_xy = lambda spec: (mt._clean(base.drop(columns="y")), (base["y"] == "yes").astype(int).values, ["no", "yes"])
+    mt.DATA_DIR = tmp
+    spec = {"name": "lr", "task": "classification", "model": "logreg", "target": "y", "cv_folds": 3}
+    try:
+        plain = mt._train(spec)
+        aug = mt._train({**spec, "extra_train_path": "/datasets/extra.parquet"})
+    finally:
+        mt._load_xy, mt.DATA_DIR = saved_xy, saved_dir
+    assert plain["ok"] and aug["ok"], aug
+    assert set(aug) == set(plain) | {"extra_rows"} and "extra_rows" not in plain
+    assert aug["extra_rows"] == 108 and aug["n_rows"] == plain["n_rows"] == 300
+    assert len(aug["fold_fit_seconds"]) == 3
+    for name, m in aug["metrics"].items():
+        assert set(m) == set(plain["metrics"][name]) and len(m["folds"]) == 3
+        assert abs(np.mean(m["folds"]) - m["mean"]) < 1e-4
+    assert aug["metrics"]["roc_auc"]["folds"] != plain["metrics"]["roc_auc"]["folds"]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

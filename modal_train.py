@@ -382,15 +382,47 @@ def _predict_ms(pipe, X, n=50):
     return round(statistics.median(times), 3)
 
 
+def _augmented_folds(n_base, n_extra, splits):
+    """(train_idx, test_idx) pairs over the concatenation [base rows, extra rows]: each base
+    split keeps its test rows and adds every extra row (positions n_base..n_base+n_extra-1)
+    to its train rows, so extra rows are fit on but never scored."""
+    import numpy as np
+
+    extra = np.arange(n_base, n_base + n_extra)
+    return [(np.concatenate([np.asarray(tr), extra]), np.asarray(te)) for tr, te in splits]
+
+
+def _load_extra(spec, X, classes):
+    """Read spec["extra_train_path"] (same columns as the dataset, target included) and prepare
+    it like _load_xy: target dropna, drop_columns, _clean, columns aligned to X. train_rows
+    never applies here. For classification the labels are encoded with the base `classes`, and
+    rows whose label the base never has are dropped, since they could never be scored.
+    Returns (X_extra, y_extra)."""
+    import pandas as pd
+
+    target = spec["target"]
+    df = pd.read_parquet(f"{DATA_DIR}{spec['extra_train_path']}").dropna(subset=[target])
+    if classes is not None:
+        code = df[target].astype(str).map({c: i for i, c in enumerate(classes)})
+        df, y = df[code.notna()], code[code.notna()].astype(int).values
+    else:
+        y = df[target].astype(float).values
+    return _clean(df.drop(columns=[target, *spec.get("drop_columns", [])], errors="ignore")).reindex(columns=X.columns), y
+
+
 def _train(spec):
     """Body of train_candidate / train_candidate_gpu. Never raises.
     Per metric: mean, std, train_mean, plus folds (per-fold validation scores, sign
     corrected). Top level: fold_fit_seconds (per-fold fit time) and, only when
     spec["measure_latency"], predict_ms (median single-row predict latency of the
-    last fold's fitted pipeline)."""
+    last fold's fitted pipeline). With spec["extra_train_path"], those rows join every
+    training fold but no test fold (see _augmented_folds), so the scores stay on the base
+    rows and pair fold for fold with the same spec without it; adds "extra_rows"."""
     import time
     import traceback
 
+    import numpy as np
+    import pandas as pd
     from sklearn.model_selection import cross_validate
 
     t0 = time.time()
@@ -398,8 +430,13 @@ def _train(spec):
         X, y, classes = _load_xy(spec)
         scoring = _scoring(spec["task"], len(classes) if classes else 0)
         latency = bool(spec.get("measure_latency"))
+        cv, n_base = _cv(spec), len(X)
+        if spec.get("extra_train_path"):
+            Xe, ye = _load_extra(spec, X, classes)
+            cv = _augmented_folds(n_base, len(Xe), cv.split(X, y))
+            X, y = pd.concat([X, Xe], ignore_index=True), np.concatenate([y, ye])
         res = cross_validate(
-            _build_pipeline(X, spec), X, y, cv=_cv(spec), scoring=scoring,
+            _build_pipeline(X, spec), X, y, cv=cv, scoring=scoring,
             return_train_score=True, error_score="raise", return_estimator=latency,
         )
         metrics = {}
@@ -409,8 +446,10 @@ def _train(spec):
             metrics[name] = {"mean": round(float(val.mean()), 5), "std": round(float(val.std()), 5),
                              "train_mean": round(float(tr.mean()), 5), "folds": [round(float(v), 5) for v in val]}
         out = {"name": spec["name"], "ok": True, "metrics": metrics,
-               "n_rows": len(X), "fit_seconds": round(time.time() - t0, 1),
+               "n_rows": n_base, "fit_seconds": round(time.time() - t0, 1),
                "fold_fit_seconds": [round(float(t), 3) for t in res["fit_time"]]}
+        if spec.get("extra_train_path"):
+            out["extra_rows"] = len(X) - n_base
         if latency:
             out["predict_ms"] = _predict_ms(res["estimator"][-1], X)
         return out

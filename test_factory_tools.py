@@ -137,6 +137,33 @@ def test_hidden_rows_repeating_dev_rows_are_flagged(tmp="runs/_dup.csv"):
     assert dup and dup[0]["severity"] >= 2
 
 
+def test_data_try_more_rows_adds_rows_to_training_only():
+    import factory_tools as ft
+
+    run, fns = make_run()
+    uploads, seen = [], []
+    saved = ft.xd.find_file_links, ft.xd.safe_fetch, ft.upload_dataset
+    ft.xd.find_file_links = lambda url: ["https://openml.org/data/more.csv"]
+    ft.xd.safe_fetch = lambda url: run.val_df.rename(columns={"Churn": "churned"})  # public rows, same schema
+    ft.upload_dataset = lambda df: uploads.append(df) or f"/datasets/up{len(uploads)}.parquet"
+    try:
+        run.tool_run_search({"rationale": "t", "task": "classification", "primary_metric": "roc_auc",
+                             "drop_columns": ["customer_id", "refund_issued"]})
+        real_map = fns["train_candidate"].map
+        fns["train_candidate"].map = lambda specs: seen.extend(specs) or real_map(specs)
+        out = run.tool_data_try({"url": "https://openml.org/d/1", "mode": "more_rows", "column_map": {"churned": "Churn"}})
+        bad = run.tool_data_try({"url": "https://openml.org/d/1", "mode": "bogus"})
+    finally:
+        ft.xd.find_file_links, ft.xd.safe_fetch, ft.upload_dataset = saved
+    assert out["verdict"] in ("improves", "no_gain", "worse") and out["mode"] == "more_rows"
+    assert {"source", "delta", "ci", "p_one_sided", "coverage"} <= set(out) and out["coverage"] == 1.0
+    assert out["extra_rows"] == len(uploads[-1]) > 0 and list(uploads[-1].columns) == list(run.dev_df.columns)
+    base_s, aug_s = seen[-2:]
+    assert "extra_train_path" not in base_s and aug_s["extra_train_path"] == f"/datasets/up{len(uploads)}.parquet"
+    assert aug_s["dataset_path"] == base_s["dataset_path"] and aug_s["repeats"] == base_s["repeats"] == ft.CONFIRM_REPEATS
+    assert "error" in bad and set(ft.DATA_TRY_SCHEMA_ADDITIONS) == {"mode", "column_map"}
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

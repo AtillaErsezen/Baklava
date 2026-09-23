@@ -32,6 +32,14 @@ CONFIRM_REPEATS = 2  # 5-fold x 2 repeats = 10 paired folds
 ROPE = 0.005         # practical-equivalence band for the Bayesian test
 GPU_MODELS = {"tabicl"}
 COMPACT_KEEP = 2     # tool results kept verbatim in context; older ones are truncated
+# Properties for agent.py's data_try input_schema (left_key/right_key are then only required for enrich).
+DATA_TRY_SCHEMA_ADDITIONS = {
+    "mode": {"type": "string", "enum": ["enrich", "more_rows"],
+             "description": "enrich (default): left-join new columns on a key. more_rows: add public rows with the "
+                            "same columns (target included) to the training folds only; validation stays on your rows."},
+    "column_map": {"type": "object", "additionalProperties": {"type": "string"},
+                   "description": "more_rows only: rename external columns to this dataset's names, {external: ours}."},
+}
 
 
 def _r(v, d=4):
@@ -256,23 +264,42 @@ class PipelineTools:
         """Tavily search for public datasets; returns candidates only, nothing is claimed."""
         return {"results": xd.search(inp["query"], inp.get("purpose", "enrich"))}
 
+    def _more_rows_spec(self, best: dict, ext, inp) -> tuple[dict, dict]:
+        """Align same-schema public rows to dev and upload them as training-only extra rows."""
+        rows, rep = xd.align_more_rows(self.dev_df, ext, self.target, inp.get("column_map"))
+        if not len(rows):
+            raise ValueError("no new rows: every external row already appears in dev")
+        spec = {**best, "name": "more_rows", "repeats": CONFIRM_REPEATS, "extra_train_path": upload_dataset(rows)}
+        return spec, {"mode": "more_rows", "extra_rows": rep["n_rows"], "coverage": rep["coverage"],
+                      "missing_columns": rep["missing_columns"]}
+
     def tool_data_try(self, inp):
-        """Fetch one public file, left-join new columns onto dev, and test the current best on base vs enriched."""
+        """Fetch one public file and test the current best on base vs augmented dev with paired folds.
+        mode "enrich" (default) left-joins new columns onto dev; "more_rows" adds same-schema rows to the
+        training folds only, so every score is still measured on the user's own rows."""
         if not self.search:
             return {"error": "run_search first; data_try compares against the current best config."}
+        mode = inp.get("mode", "enrich")
+        if mode not in DATA_TRY_SCHEMA_ADDITIONS["mode"]["enum"]:
+            return {"error": f"mode must be one of {DATA_TRY_SCHEMA_ADDITIONS['mode']['enum']}, got {mode!r}"}
         links = xd.find_file_links(inp["url"])
         if not links:
             return {"error": "no csv/parquet link found at that url; pass a direct file url."}
         ext = xd.safe_fetch(links[0])
-        aug, rep = xd.enrich(self.dev_df, ext, inp["left_key"], inp["right_key"], inp.get("columns"), self.target)
         best = self.specs[self.search["top"][0]["name"]]
         pm = self.search["pm"]
         base_s = {**best, "name": "base", "repeats": CONFIRM_REPEATS}
-        aug_s = {**best, "name": "enriched", "repeats": CONFIRM_REPEATS, "dataset_path": upload_dataset(aug)}
+        if mode == "more_rows":
+            aug_s, rep = self._more_rows_spec(best, ext, inp)
+        else:
+            aug, rep = xd.enrich(self.dev_df, ext, inp["left_key"], inp["right_key"], inp.get("columns"), self.target)
+            aug_s = {**best, "name": "enriched", "repeats": CONFIRM_REPEATS, "dataset_path": upload_dataset(aug)}
         res = {r["name"]: r for r in self._map([base_s, aug_s]) if r.get("ok")}
         if len(res) < 2:
             return {"error": "a trial fit failed", "report": rep}
-        a, b = res["enriched"]["metrics"][pm]["folds"], res["base"]["metrics"][pm]["folds"]
+        if mode == "more_rows":  # rows actually trained on (labels the dev split never has are dropped remotely)
+            rep["extra_rows"] = res[aug_s["name"]].get("extra_rows", rep["extra_rows"])
+        a, b = res[aug_s["name"]]["metrics"][pm]["folds"], res["base"]["metrics"][pm]["folds"]
         if not HIGHER_IS_BETTER[pm]:
             a, b = b, a
         n = self.search["n_star"]
