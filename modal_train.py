@@ -126,6 +126,11 @@ def load_local(path: str):
     for c in df.columns:
         if not (df[c].dtype == object or pd.api.types.is_string_dtype(df[c])):
             continue
+        num = pd.to_numeric(df[c].astype(str).str.strip().replace("", None), errors="coerce")
+        filled = df[c].astype(str).str.strip().replace("", None).notna()
+        if filled.any() and num[filled].notna().mean() >= 0.95:  # e.g. Telco TotalCharges: numbers plus " "
+            df[c] = num
+            continue
         sample = df[c].dropna().astype(str).head(200)
         if len(sample) == 0 or sample.str.len().min() < 6:
             continue

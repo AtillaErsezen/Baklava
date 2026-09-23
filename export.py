@@ -73,6 +73,11 @@ def load(path: str) -> pd.DataFrame:
     for c in df.columns:
         if not (df[c].dtype == object or pd.api.types.is_string_dtype(df[c])):
             continue
+        text = df[c].astype(str).str.strip().replace("", None)
+        num = pd.to_numeric(text, errors="coerce")
+        if text.notna().any() and num[text.notna()].notna().mean() >= 0.95:
+            df[c] = num  # numbers stored as text with blanks, same rule as the agent
+            continue
         sample = df[c].dropna().astype(str).head(200)
         if len(sample) == 0 or sample.str.len().min() < 6:
             continue

@@ -222,6 +222,16 @@ def test_day_first_dates_are_parsed_as_day_first(tmp="runs/_dates.csv"):
     assert list(mt.load_local(tmp)["Date"].dt.day) == [5, 19, 5]  # US mm/dd/yyyy stays month-first
 
 
+
+def test_numeric_columns_with_blank_strings_become_numeric(tmp="runs/_blank.csv"):
+    import pandas as pd
+    pd.DataFrame({"TotalCharges": ["29.85", "1889.5", " ", "108.15"] * 30, "plan": ["a", "b", "a", "c"] * 30,
+                  "y": [0, 1, 0, 1] * 30}).to_csv(tmp, index=False)
+    df = mt.load_local(tmp)
+    assert pd.api.types.is_numeric_dtype(df["TotalCharges"]) and df["TotalCharges"].isna().sum() == 30
+    assert not pd.api.types.is_numeric_dtype(df["plan"])  # real text stays text
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
