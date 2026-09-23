@@ -7,6 +7,7 @@ Harness tools for FactoryRun: the math decides, the LLM judges.
   data_search / data_try    Tavily search, then a measured enrich trial (never a claimed gain)
 Mixed into agent.FactoryRun; relies on self.df, self.target, self.emit, self.fns, self.specs.
 """
+import itertools
 import os
 import shutil
 
@@ -28,14 +29,15 @@ from results_store import candidate_row
 HIGHER_IS_BETTER = {"roc_auc": True, "f1_macro": True, "accuracy": True, "r2": True, "rmse": False, "mae": False}
 TASK_METRICS = {"classification": ("roc_auc", "f1_macro", "accuracy"), "regression": ("rmse", "mae", "r2")}
 SPACE_BUDGET = 3000  # pipelines generated per run
-RACE_CONFIGS = 243   # 3^5 raced after zero-cost prior ranking
+RACE_CONFIGS = 27    # 3^3 raced after zero-cost prior ranking; ponytail: demo-sized, 243 for a real search
 N_MIN = 500          # rows at the first racing rung
 MAX_FITS = 1500      # Modal CV jobs per search
 TOP_K = 3
 CONFIRM_REPEATS = 2  # 5-fold x 2 repeats = 10 paired folds
 ROPE = 0.005         # practical-equivalence band for the Bayesian test
 GPU_MODELS = {"tabicl"}
-COMPACT_KEEP = 2     # tool results kept verbatim in context; older ones are truncated
+PROGRESS_EVERY = 20  # status event per this many finished Modal fits, so long rungs show progress
+COMPACT_KEEP = 2    # tool results kept verbatim in context; older ones are truncated
 
 
 def _r(v, d=4):
@@ -50,6 +52,15 @@ def _hidden_score(metric: str, y, pred, proba) -> float | None:
     fn = {"accuracy": accuracy_score, "f1_macro": lambda a, b: f1_score(a, b, average="macro"), "r2": r2_score,
           "mae": mean_absolute_error, "rmse": lambda a, b: float(np.sqrt(mean_squared_error(a, b)))}[metric]
     return float(fn(y, pred))
+
+
+def _round_robin(pool: list[dict], n: int) -> list[dict]:
+    """First n configs taking one per family in turn, prior order kept within each family,
+    so a short race still compares every family instead of the prior's favourite."""
+    families: dict[str, list[dict]] = {}
+    for c in pool:
+        families.setdefault(c.get("family", c["model"]), []).append(c)
+    return [c for group in itertools.zip_longest(*families.values()) for c in group if c][:n]
 
 
 def _pareto(rows: list[dict], sign: float) -> set[str]:
@@ -98,8 +109,13 @@ class PipelineTools:
         """CV specs in parallel; foundation models go to the GPU function."""
         cpu = [s for s in specs if s["model"] not in GPU_MODELS]
         gpu = [s for s in specs if s["model"] in GPU_MODELS]
-        out = list(self.fns["train_candidate"].map(cpu)) if cpu else []
-        return out + (list(self.fns["train_candidate_gpu"].map(gpu)) if gpu else [])
+        out = []
+        for fn, batch in (("train_candidate", cpu), ("train_candidate_gpu", gpu)):
+            for r in self.fns[fn].map(batch) if batch else []:  # streams as Modal finishes each fit
+                out.append(r)
+                if len(out) % PROGRESS_EVERY == 0 and len(out) < len(specs):
+                    self.emit("status", {"msg": f"Trained {len(out)} of {len(specs)} pipelines on Modal"})
+        return out
 
     def _spec(self, base: dict, c: dict, n_rows: int | None) -> dict:
         spec = {**base, "name": c["name"], "model": c["model"], "params": c.get("params") or {},
@@ -124,7 +140,8 @@ class PipelineTools:
 
     # ---- search
     def tool_run_search(self, inp):
-        """Generate ~3000 pipelines, rank by the benchmark prior, race the top 243 on growing subsamples."""
+        """Generate ~3000 pipelines, rank by the benchmark prior, race a shortlist spread across families
+        on growing subsamples."""
         task, pm = inp["task"], inp["primary_metric"]
         if pm not in TASK_METRICS[task]:
             return {"error": f"metric '{pm}' does not fit task '{task}'; allowed: {list(TASK_METRICS[task])}"}
@@ -138,7 +155,7 @@ class PipelineTools:
             if c.get("name") not in seen and c.get("model") in ss.FAMILIES[task] and _safe_config(c):
                 seen.add(c["name"])
                 pool.append(c)
-        configs = pool[:RACE_CONFIGS]
+        configs = _round_robin(pool, RACE_CONFIGS)
         sizing = sampling.choose_n(n_dev, len(configs))
         n_star = max(min(N_MIN, n_dev), sizing["n_star"])
         schedule = racing.rung_schedule(len(configs), min(N_MIN, n_star), n_star, eta=3, top_k=TOP_K)

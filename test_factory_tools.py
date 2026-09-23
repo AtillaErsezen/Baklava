@@ -71,14 +71,17 @@ def test_diag_summary_is_compact_and_flags_leak():
     assert len(str(out)) < 6000  # token budget: compact
 
 
-def test_run_search_races_hundreds_of_configs():
+def test_run_search_races_a_shortlist_across_families():
     run, fns = make_run()
     out = run.tool_run_search({"rationale": "test", "task": "classification", "primary_metric": "roc_auc",
                                "drop_columns": ["customer_id", "refund_issued"]})
-    assert out["space_size"] >= 2000 and out["raced"] >= 100
+    assert out["space_size"] >= 2000 and out["raced"] == factory_tools.RACE_CONFIGS
+    assert len({run.search["by_name"][n].get("family", run.search["by_name"][n]["model"])
+                for n in run.search["by_name"]}) >= 5
     assert out["top"][0]["name"] in run.specs and len(out["top"]) == 3
     assert out["fits"] < out["raced"] * len(out["schedule"])  # racing saved fits
     assert "n_star" in out and "justification" in out
+    assert any("Trained 20 of" in e["payload"].get("msg", "") for e in run.events if e["kind"] == "status")
 
 
 def test_confirm_and_test_ranks_with_statistics():

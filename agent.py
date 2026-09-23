@@ -44,7 +44,7 @@ TOOLS = [
     },
     {
         "name": "run_search",
-        "description": "Generate ~3000 candidate pipelines, rank them by a benchmark prior, and race the top 243 on "
+        "description": "Generate ~3000 candidate pipelines, rank them by a benchmark prior, and race a 27-config shortlist spread across model families on "
                        "statistically sized growing subsamples on Modal with paired early dropping. Returns the "
                        "funnel, the sample size n* with its justification, and the top 3.",
         "input_schema": {"type": "object", "properties": {
