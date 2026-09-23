@@ -9,6 +9,12 @@ you a model trained on all of your data plus a script to retrain it yourself.
 The LLM judges and narrates; every number comes from deterministic code. Design notes: [docs/AGENT_PLAN.md](docs/AGENT_PLAN.md).
 Event contract for UIs: [docs/EVENTS.md](docs/EVENTS.md). Use-case catalog: [docs/USE_CASES.md](docs/USE_CASES.md).
 
+## Try it
+
+- Web app: **https://ml-factory-baklava.vercel.app** (also at https://atillaersezen--ml-factory-web-web.modal.run)
+- Access code: **DEMO**
+- Demo data: `data/demo/telco_churn.csv` (target `Churn`) or `data/demo/walmart_sales.csv` (target `Weekly_Sales`); goals to paste are in `data/demo/README.md`.
+
 ## How a run works
 
 ```
