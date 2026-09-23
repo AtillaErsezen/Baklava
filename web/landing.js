@@ -244,11 +244,11 @@ function initExplainer(gsap, ScrollTrigger) {
   mm.add('(max-width: 960px) and (prefers-reduced-motion: no-preference), (max-height: 699px) and (prefers-reduced-motion: no-preference)', () => {
     const proxy = { p: 3 / 7 };
     render(proxy.p);
-    const tween = gsap.to(proxy, {
-      p: 1, duration: 3.6, ease: 'none', paused: true, onUpdate: () => render(proxy.p),
-      scrollTrigger: { trigger: '#how-funnel', start: 'top 80%', once: true, onEnter: () => tween.play() },
-    });
-    return () => { tween.kill(); render(1); };
+    const tween = gsap.to(proxy, { p: 1, duration: 3.6, ease: 'none', paused: true, onUpdate: () => render(proxy.p) });
+    // A separate trigger: onEnter fires during creation when the page already sits past the funnel,
+    // and an inline scrollTrigger would then call tween.play() before `tween` is assigned.
+    const st = ScrollTrigger.create({ trigger: '#how-funnel', start: 'top 80%', once: true, onEnter: () => tween.play() });
+    return () => { st.kill(); tween.kill(); render(1); };
   });
 }
 
