@@ -201,7 +201,7 @@ def test_events_and_export_are_404_then_200(tmp_path, monkeypatch):
     client, _, _ = _client(tmp_path, monkeypatch)
     rid = "20260923-120000-abcdef"
     assert client.get(f"/api/runs/{rid}/events").status_code == 404
-    assert client.get(f"/api/runs/{rid}/export.zip").status_code == 404
+    assert client.get(f"/api/runs/{rid}/export.zip", headers={"X-Access-Code": CODE}).status_code == 404
 
     runs = tmp_path / "runs"
     runs.mkdir()
@@ -216,9 +216,25 @@ def test_events_and_export_are_404_then_200(tmp_path, monkeypatch):
     secret = tmp_path / "secret.txt"
     secret.write_text("do not leak", encoding="utf-8")
     os.symlink(secret, export / "link.txt")
-    r = client.get(f"/api/runs/{rid}/export.zip")
+    assert client.get(f"/api/runs/{rid}/export.zip").status_code == 401  # the user's model needs the code
+    r = client.get(f"/api/runs/{rid}/export.zip", headers={"X-Access-Code": CODE})
     assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
     assert zipfile.ZipFile(io.BytesIO(r.content)).namelist() == ["MODEL_CARD.md"]
+
+
+def test_run_ids_are_not_guessable(tmp_path, monkeypatch):
+    """Run ids gate reads of events and exports: 16 random hex chars (64 bits), not 6 (24 bits)."""
+    client, calls, _ = _client(tmp_path, monkeypatch)
+    ds = _upload(client).json()["dataset_id"]
+    rid = client.post("/api/runs", json={"dataset_id": ds, "target": "y", "purpose": "", "access_code": CODE}).json()["run_id"]
+    assert len(rid.rsplit("-", 1)[1]) >= 16
+
+
+def test_reads_are_rate_limited_per_ip(tmp_path, monkeypatch):
+    client, _, _ = _client(tmp_path, monkeypatch, read_limit=3)
+    codes = [client.get("/api/runs/20260923-120000-abcdef").status_code for _ in range(4)]
+    assert codes[:3] == [404, 404, 404] and codes[3] == 429
+    assert _ip(client, "10.9.9.9").get("/api/runs/20260923-120000-abcdef").status_code == 404  # other ip unaffected
 
 
 # ---- config, headers, static

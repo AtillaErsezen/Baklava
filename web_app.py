@@ -44,6 +44,9 @@ MAX_ACTIVE_RUNS = 3
 MAX_RUNS_PER_HOUR = 5            # per client ip
 MAX_UPLOADS_PER_HOUR = 20        # per client ip
 MAX_FAILED_CODES = 20            # wrong access codes per client ip per hour before a lockout
+MAX_READS_PER_WINDOW = 600       # status / events / export reads per client ip per READ_WINDOW_S (1 per second)
+READ_WINDOW_S = 600
+RUN_ID_HEX = 16                  # 64 random bits: run ids gate reads of events and exports
 WINDOW_S = 3600
 STALE_S = 2 * 3600               # a queued/running entry older than this died with its container
 MAX_EVENTS_BYTES = MAX_EXPORT_BYTES = 20 * 1024 * 1024
@@ -89,6 +92,18 @@ def _client_ip(request: Request) -> str:
     """The peer address: Modal's proxy puts the real client ip there (its docs point rate limits at it).
     X-Forwarded-For is client-controlled, so trusting it would let anyone dodge the per-ip limits."""
     return request.client.host if request.client else "unknown"
+
+
+def _throttle_read(store, request: Request, limit: int) -> None:
+    """Fixed-window read counter per client ip (O(1) per request): polling one run every 3 s stays far below it,
+    scraping or brute-forcing run ids does not."""
+    key_src = os.environ.get("ACCESS_CODE", "") or "ml-factory"
+    ip = hmac.new(key_src.encode(), _client_ip(request).encode(), "sha256").hexdigest()[:32]
+    key = f"read:{ip}:{int(time.time() // READ_WINDOW_S)}"
+    n = int(store.get(key) or 0) + 1
+    store[key] = n
+    if n > limit:
+        raise _err(429, "too many requests, slow down")
 
 
 def _authorize(store, request: Request, code: str) -> str:
@@ -287,7 +302,7 @@ class RunRequest(BaseModel):
 # ------------------------------------------------------------------ the API
 
 def create_app(spawn, status_store, storage_root: str, *, commit=None, refresh=None, web_dir: str | None = None,
-               max_upload_bytes: int = MAX_UPLOAD_BYTES) -> FastAPI:
+               max_upload_bytes: int = MAX_UPLOAD_BYTES, read_limit: int = MAX_READS_PER_WINDOW) -> FastAPI:
     """spawn(run_id, csv_path, target, purpose) starts a run; status_store is dict-like (a modal.Dict in prod);
     commit/refresh publish and pick up volume writes across containers."""
     store, uploads, runs_dir = status_store, os.path.join(storage_root, "uploads"), os.path.join(storage_root, "runs")
@@ -362,7 +377,7 @@ def create_app(spawn, status_store, storage_root: str, *, commit=None, refresh=N
             raise _err(429, "the factory is busy, try again in a few minutes")
         csv_path = _dataset_path(body.dataset_id)
         _check_target(csv_path, body.target)
-        run_id = _new_id(6)
+        run_id = _new_id(RUN_ID_HEX)
         store[run_id] = {"status": "queued", "ts": now}
         try:
             spawn(run_id, csv_path, body.target, body.purpose.strip() or None)
@@ -374,14 +389,17 @@ def create_app(spawn, status_store, storage_root: str, *, commit=None, refresh=N
         return {"run_id": run_id}
 
     @api.get("/api/runs/{run_id}/events")
-    def run_events(run_id: str):
+    def run_events(run_id: str, request: Request):
+        _throttle_read(store, request, read_limit)
         path = os.path.join(runs_dir, f"{_valid_id(run_id)}_events.jsonl")
         _refresh()
         return _jsonl(_read_capped(path, MAX_EVENTS_BYTES))
 
     @api.get("/api/runs/{run_id}/export.zip")
-    def run_export(run_id: str):
+    def run_export(run_id: str, request: Request, x_access_code: str = Header("", max_length=256)):
+        _throttle_read(store, request, read_limit)
         folder = os.path.join(runs_dir, f"{_valid_id(run_id)}_export")
+        _authorize(store, request, x_access_code)  # the user's model and retrain script need the access code
         _refresh()
         if os.path.islink(folder) or not os.path.isdir(folder):
             raise _err(404, "no export for this run")
@@ -389,7 +407,8 @@ def create_app(spawn, status_store, storage_root: str, *, commit=None, refresh=N
                         headers={"Content-Disposition": f'attachment; filename="{run_id}_export.zip"'})
 
     @api.get("/api/runs/{run_id:path}")  # declared last: the :path form also catches "../x" so it gets a 400
-    def run_status(run_id: str):
+    def run_status(run_id: str, request: Request):
+        _throttle_read(store, request, read_limit)
         entry = store.get(_valid_id(run_id))
         if not isinstance(entry, dict):
             raise _err(404, "unknown run")
