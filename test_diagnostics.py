@@ -154,6 +154,13 @@ def test_rare_classes_flagged():
     assert d.run_check("rare_classes", d.make_context(_cls_frame(500), "y", "classification"))["severity"] == 0
 
 
+
+def test_linear_leak_check_needs_enough_rows():
+    rng = np.random.default_rng(5)
+    df = pd.DataFrame({"a": rng.normal(size=6), "b": rng.normal(size=6), "y": rng.normal(size=6)})
+    assert d._linear_leaks(d.make_context(df, "y", "regression")) == {}  # 6 rows: exact fits prove nothing
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

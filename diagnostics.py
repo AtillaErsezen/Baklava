@@ -498,6 +498,9 @@ def single_feature_score(ctx: Context, columns=None) -> dict:
     return _out(v, 0, f"Best single features: {_names(v)}.")
 
 
+LEAK_MIN_ROWS = 30  # a 3-parameter least-squares fit on a handful of rows reaches R2 > 0.999 by arithmetic
+
+
 def _linear_leaks(ctx: Context, columns=None) -> dict[str, float]:
     """Regression only: one numeric feature, or a pair (e.g. casual + registered = cnt), whose least-squares
     fit reproduces the target with R2 > 0.999 on the scoring rows. Pairs come from the LEAK_PAIR_TOP features
@@ -506,7 +509,7 @@ def _linear_leaks(ctx: Context, columns=None) -> dict[str, float]:
         return {}
     idx = _rows(ctx, SCORE_ROWS)
     e, y = _encn(ctx, _num(ctx, columns)).iloc[idx], ctx.yc[idx]
-    if e.shape[1] == 0 or np.std(y) == 0:
+    if e.shape[1] == 0 or np.std(y) == 0 or len(e) < LEAK_MIN_ROWS:  # tiny samples fit anything exactly
         return {}
     top = list(e.corrwith(pd.Series(y, index=e.index)).abs().fillna(0).sort_values(ascending=False).index[:LEAK_PAIR_TOP])
 
