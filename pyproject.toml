@@ -4,9 +4,14 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.13"
 dependencies = [
-    "anthropic>=1.8.0",
+    "baycomp>=1.0.3",
     "modal>=1.5.5",
+    "openai>=3.19.0",
     "pandas>=3.0.6",
     "pyarrow>=25.0.1",
+    "scikit-learn>=1.9.1",
+    "scipy>=1.18.1",
+    "statsmodels>=0.15.0",
     "supabase>=2.31.0",
+    "tavily-python>=0.8.4",
 ]

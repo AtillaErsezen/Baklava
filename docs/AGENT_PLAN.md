@@ -1,4 +1,4 @@
-# Agent development plan — ML Factory (my section), research-backed
+# Agent development plan - ML Factory (my section), research-backed
 
 ## Context
 Hackathon today (Accel AI Innovate Amsterdam, 23 Sep 2026). ML Factory: a user uploads a tabular dataset + target +
@@ -28,12 +28,13 @@ verification-before-completion.
    unless the organisers confirm the event counts as evaluation.
 3. **Rung 0 = the proven zero-shot portfolio**: AutoGluon `zeroshot_portfolio_2025` (20 hand-tuned configs, plain
    dicts, copied in) + TabICLv2 + Sobol random configs. It beats Bayesian-optimisation search on a small budget (TabRepo).
-4. **Hidden holdout the agent can never see** (Meta AIRA2): selection by validation alone lost 9–16 points in their tests.
+4. **Hidden holdout the agent can never see** (Meta AIRA2): selection by validation alone lost 9-16 points in their tests.
    Top-3 reported, not top-1 (recovers ~10 %).
 5. **Nebius has no prompt caching**: every turn re-bills the whole context, so context design is the token budget.
 6. **Single agent**; no council (multi-agent hurts in tool-heavy tasks, arXiv 2512.08296). One cheap critic call at most.
-7. **Numba over C++**: the model libraries are already native. Hot loops (DeLong, paired bootstrap, row hashing) use
-   `@njit`; a C++ port happens only if a benchmark shows numba < 2× numpy there.
+7. **Vectorized numpy over C++**: the model libraries are already native. Hot loops (DeLong, paired bootstrap, row hashing)
+   are numpy-vectorized (numba has no wheel for this Mac and needs LLVM to build); a C++ port happens only if a benchmark
+   shows a loop > 1 s per rung.
 8. **Reward hacking is real** (~50 % of episodes when allowed): metric and eval code stay outside the LLM's reach; every
    number comes from a tool return.
 
@@ -46,7 +47,7 @@ verification-before-completion.
 4 Space       → portfolio(20) + TFM + memory configs + Sobol randoms (~2-5k) → prior-ranked     ◆ purpose filter, predict-then-verify prune
 5 Race        → ASHA η=3 on row fidelity 500→1.5k→4.5k→13.5k→n*, paired early dropping,
                 Kendall-τ rank-stability stop                                                ◆ inspect survivors
-6 Confirm     → top-k: 10×10 CV, Nadeau–Bengio + baycomp ROPE + Holm; walk-forward/purged CV if temporal
+6 Confirm     → top-k: 10×10 CV, Nadeau-Bengio + baycomp ROPE + Holm; walk-forward/purged CV if temporal
 7 External    → Tavily search → fetch → enrich/more-rows paired trial                        ◆ which sources to try
 8 Ensemble    → Caruana greedy ensemble of top 3-5 from different families; kept only if it wins
 9 Hidden test → one-shot: McNemar/DeLong/paired bootstrap, calibration, dev→hidden gap
@@ -62,16 +63,17 @@ verification-before-completion.
 | `sampling.py` | 3-way split, n\* sizing, stratified draw, representativeness tests |
 | `search_space.py` | Portfolio dicts, TFM, Sobol randoms, purpose filters, meta-feature prior |
 | `racing.py` | ASHA schedule, paired early dropping, LCCV-style extrapolation with protection, τ stop |
-| `stats_tests.py` | Nadeau–Bengio, baycomp wrapper, Holm, McNemar, DeLong (numba), paired bootstrap, calibration |
+| `stats_tests.py` | Nadeau-Bengio, baycomp wrapper, Holm, McNemar, fast DeLong (vectorized), paired bootstrap, calibration |
+| `export.py` | User-model export: fitted pipeline + params JSON + standalone `train_<model>.py` (template, not LLM) + model card |
 | `external_data.py` | Tavily search/extract, safe fetch, enrich / more-rows trials |
 | `memory.py` | Supabase experience store: meta-features vector → configs/scores; nearest-neighbour warm start |
 | `prompts/system.md` | System prompt (6) |
 | `agent.py` (modify) | Harness phases, ~8 LLM tools, native OpenAI loop, compaction |
 
 ### 1. Diagnostics (~45 checks, one batched pass, ≤ 15 findings to the LLM)
-Quality: missing pattern/informative missingness, exact and near duplicates (numba row hashing, **cross-split
+Quality: missing pattern/informative missingness, exact and near duplicates (vectorized row hashing, **cross-split
 duplicate check**), constant, id-like, high-cardinality, rare levels, mixed types, MAD/isolation outliers, datetime parse,
-text-like. Target: imbalance, entropy, skew + Yeo-Johnson λ, target outliers, kNN label-noise rate, Breusch–Pagan.
+text-like. Target: imbalance, entropy, skew + Yeo-Johnson λ, target outliers, kNN label-noise rate, Breusch-Pagan.
 Signal: normalised MI, Spearman−Pearson gap, η², single-feature score → **leakage**, monotonicity. Structure: n/p, VIF,
 condition number, PCA intrinsic dim, redundant pairs, Friedman H interactions, sparsity. Complexity: **landmarkers**
 (linear, stump, depth-3 tree, 1-NN, NB, **TabICLv2**; research says these are the strongest meta-features), RESET,
@@ -80,7 +82,7 @@ per-feature KS/PSI, ACF seasonality, ADF stationarity. Cheap PyMFE groups only (
 
 ### 2. Sample size n\* (random, stratified, verified)
 - Pilot n₀ = min(1000, N), stratified on target (quantile bins for regression) × k-means cluster × time bucket.
-- Evaluation precision with K configs compared: **n ≥ ln(2K/δ)/(2ε²)** (Hoeffding + union bound); AUC via Hanley–McNeil.
+- Evaluation precision with K configs compared: **n ≥ ln(2K/δ)/(2ε²)** (Hoeffding + union bound); AUC via Hanley-McNeil.
 - Training size: fit err(n) = a + b·n^(−c) on 3-4 anchors → n_knee where predicted gain < ε.
 - n\* = min(N_dev, max(n_eval, n_knee)); grow stops early if Kendall τ(rank rung i, i+1) ≥ 0.8.
 - Representativeness: per-feature KS/χ² with FDR + global adversarial check (sample vs full AUC ≈ 0.5), else redraw.
@@ -90,7 +92,7 @@ per-feature KS/PSI, ACF seasonality, ADF stationarity. Cheap PyMFE groups only (
 - Families: logreg/ridge, RF, LightGBM, XGBoost, **CatBoost** (new; TabArena's default GBDT), MLP, **TabICLv2** (GPU).
 - Preprocessing axes: impute, scale/quantile, onehot/ordinal/target encoding, target transform, class weights.
 - Sobol draws per family → ~2-5k configs; purpose filters (interpretability, latency, memory).
-- **Prior rules from the benchmarks**: n ≤ 10k & d ≤ 100 → TFM first; 10k–100k → TFM vs CatBoost/LightGBM;
+- **Prior rules from the benchmarks**: n ≤ 10k & d ≤ 100 → TFM first; 10k-100k → TFM vs CatBoost/LightGBM;
   > 100k or d > 500 → GBDT-led; many high-cardinality categoricals → CatBoost; skewed/irregular/uninformative
   features → GBDT over MLP; smooth signal → MLP allowed with a quantile transform. Spend budget on **family diversity +
   ensembling**, not deep HPO (McElfresh 2023).
@@ -106,15 +108,27 @@ per-feature KS/PSI, ACF seasonality, ADF stationarity. Cheap PyMFE groups only (
 - Winner's curse: finalists are re-scored on untouched folds (BBC-CV idea) and on search-val.
 
 ### 5. Confirm, backtest, test, rank
-- Top-k: 10×10 repeated CV → Nadeau–Bengio corrected t (df = kr−1) + `baycomp` P(better / equivalent / worse)
+- Top-k: 10×10 repeated CV → Nadeau-Bengio corrected t (df = kr−1) + `baycomp` P(better / equivalent / worse)
   with ROPE, Holm vs the best. Tie groups are reported.
 - Temporal data: `TimeSeriesSplit(gap=h)` walk-forward + purged k-fold with embargo; CPCV via `skfolio` for a
-  score distribution; Mann–Kendall decay test across windows.
+  score distribution; Mann-Kendall decay test across windows.
 - Hidden test, once: McNemar (accuracy), DeLong (AUC), paired bootstrap (regression) vs the best; Brier/ECE
   calibration; permutation importance; 5 % noise robustness; **dev→hidden gap** flag.
 - **Cost / Big-O**: theoretical complexity per family + measured fit-time log-log slope across rungs + single-row predict ms.
 - **Ranking**: Pareto over (statistical tie group, cost); the purpose picks the operating point. The Caruana ensemble is shown
   only if it beats the best single model on hidden.
+
+### 5b. User purpose in, trainable model out (end-user flow)
+The end user gives **dataset + target + purpose** in plain words (e.g. "flag churners early, recall matters, must be
+explainable"). Phase 1 turns the purpose into a machine spec via one LLM call with a JSON schema: primary metric,
+constraints (interpretability, latency, memory, fairness column), operating point (threshold or top-k %), CV type.
+That spec drives the purpose filters, the metric, and the final pick. After the report the user gets:
+1. The fitted model (`models/<run_id>/<name>.joblib` on the Modal volume, downloadable) + `params.json`.
+2. A standalone `train_<model>.py` generated from a template (not the LLM): the exact sklearn pipeline and hyperparameters,
+   so the user retrains on their own full or future data with `uv run train_<model>.py data.csv --target y`.
+3. A model card: purpose, metric ± CI, operating threshold, calibration, known caveats, drift checks to rerun.
+4. An optional one-click "train on full data" (`fit_final`) when the user accepts the recommendation.
+Test: the exported script retrains on churn and reproduces the reported CV score within 1 std.
 
 ### 6. System prompt (`prompts/system.md`, ≤ 1.5k tokens, stable prefix, no timestamps)
 Original text; section structure inspired by the CL4R1T4S prompt (third-party copy; structure only).
@@ -165,13 +179,13 @@ I can write these as a PR against his file if he prefers.
 0. **Sync + plan doc (5 min)**: `git merge --ff-only origin/main` first (keeps it a fast-forward), then
    `docs/AGENT_PLAN.md` → commit → push to `Coflazo-Branch-N`.
 1. **Env (30 min)**: git identity = Coflazo; `uv remove anthropic`;
-   `uv add openai tavily-python scikit-learn scipy numba baycomp statsmodels`; `! uv run modal setup`; deploy; apply
+   `uv add openai tavily-python scikit-learn scipy baycomp statsmodels` (done); `! uv run modal setup`; deploy; apply
    the Nebius promo; set up the Supabase `experience` table with Emre.
 2. **Provider + model probe (1 h)**: native loop, scripted replay test, pick the model by probe.
 3. **Diagnostics + sampling (2 h)**: core 20 checks + n\* + 3-way split; the rest of the catalog as time allows.
 4. **Space + racing + stats (2.5 h)**: portfolio, prior, ASHA, tests. TabICLv2 once Atilla's GPU function lands.
 5. **Prompt + context + tools (1 h)**: `prompts/system.md`, compaction, ledger, 8 tools.
-6. **Confirm/test/rank + report (1 h)**.
+6. **Confirm/test/rank + report + export (1.5 h)**: `export.py`, model card, purpose spec.
 7. **Tavily + memory (1 h)**.
 8. **Golden eval + demo cache (45 min)**.
 9. Stretch: Caruana ensemble, CAAFE-style LLM features with CV gate (sandboxed on Modal), CPCV, critic call.
@@ -211,7 +225,7 @@ Commit per step as Coflazo (`feat: ...`); verify `git log -1 --format='%an <%ae>
 
 ## Verification
 - Unit tests (plain asserts, no network): diagnostics on synthetic data with known properties (planted leak, linear vs
-  `sin`, 95/5 imbalance, drift); n\* formula vs hand calc; biased sample rejected; Nadeau–Bengio vs a hand-computed value;
+  `sin`, 95/5 imbalance, drift); n\* formula vs hand calc; biased sample rejected; Nadeau-Bengio vs a hand-computed value;
   DeLong vs a reference; ASHA survivor counts; the racing drop never removes a protected config; SSRF guard rejects
   `http://` / `127.0.0.1` / oversize; OpenAI loop replays a scripted trajectory.
 - **Golden eval set** (5 datasets: leaky churn, clean houses, drifting time series, high-cardinality categorical, tiny
