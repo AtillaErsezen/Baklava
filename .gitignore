@@ -3,3 +3,5 @@ runs/
 .venv/
 .env
 .env.*
+
+!.env.example

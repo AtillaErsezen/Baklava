@@ -1,0 +1,324 @@
+.business-flow {
+  --scene-progress: 0;
+  position: relative;
+  height: clamp(390px, 44vw, 570px);
+  margin: -52px 0 78px;
+  overflow: hidden;
+  isolation: isolate;
+  color: #fff3da;
+  background: #21130d;
+  border: 1px solid #a9804538;
+  border-radius: 4px;
+}
+.promo-art,
+.promo-canvas,
+.promo-fallback,
+.promo-light,
+.promo-shade,
+.promo-grain {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.promo-canvas {
+  display: block;
+  opacity: 0;
+  transition: opacity 1s ease;
+}
+.business-flow[data-ready="true"] .promo-canvas {
+  opacity: 1;
+}
+.promo-fallback {
+  background:
+    radial-gradient(ellipse at 80% 15%, #a15d2a 0%, transparent 58%),
+    linear-gradient(110deg, #201008, #583115);
+  transition: opacity 0.8s;
+}
+.business-flow[data-ready="true"] .promo-fallback {
+  opacity: 0;
+  pointer-events: none;
+}
+.fallback-sculpture {
+  position: absolute;
+  left: 73%;
+  top: 40%;
+  width: 150px;
+  height: 250px;
+  transform: translateX(-50%);
+}
+.fallback-sculpture i {
+  position: absolute;
+  display: block;
+  width: 150px;
+  height: 90px;
+  transform: rotate(-24deg) skew(30deg);
+  background: linear-gradient(130deg, #ffc86b24, #c889294d, #ffd99580);
+  border: 1px solid #ffe3a0b3;
+  box-shadow:
+    0 3px 0 #825321,
+    0 14px 32px #edb14a16;
+}
+.promo-light {
+  pointer-events: none;
+  background:
+    radial-gradient(
+      ellipse at 86% -15%,
+      #ffdcb23d 0%,
+      #d8872b0c 42%,
+      transparent 65%
+    ),
+    conic-gradient(
+      from 184deg at 91% -25%,
+      transparent 0deg,
+      #ffdda514 12deg,
+      transparent 22deg,
+      #ffe9b809 29deg,
+      transparent 40deg
+    );
+  mix-blend-mode: screen;
+  opacity: 0.7;
+}
+.promo-shade {
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, #1a0c05cc 0%, #1a0c0560 34%, transparent 62%),
+    linear-gradient(0deg, #140c089c, transparent 25%);
+}
+.promo-grain {
+  pointer-events: none;
+  opacity: 0.021;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.91' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath fill='%23fff' filter='url(%23grain)' d='M0 0h180v180H0z'/%3E%3C/svg%3E");
+}
+.promo-wordmark {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  left: 5.5%;
+  top: 8%;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.6px;
+  color: #f5e0bd;
+}
+.promo-wordmark svg {
+  width: 19px;
+  height: 22px;
+  color: #e7c38a;
+}
+.promo-copy {
+  position: absolute;
+  left: 5.5%;
+  top: 38%;
+  right: 48%;
+  height: 160px;
+}
+.promo-chapter {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transform: translateY(13px);
+  transition:
+    opacity 0.3s ease,
+    transform 0.85s cubic-bezier(0.2, 0.7, 0.2, 1);
+  pointer-events: none;
+}
+.promo-chapter[data-current="true"] {
+  transition-delay: 0.28s;
+  transition-duration: 0.85s;
+  opacity: 1;
+  transform: translateY(0);
+}
+.promo-chapter > p {
+  font-size: clamp(34px, 4.1vw, 55px);
+  font-weight: 550;
+  line-height: 1.12;
+  letter-spacing: -2px;
+  white-space: nowrap;
+}
+.promo-chapter > span {
+  display: block;
+  font-family: Georgia, "Times New Roman", serif;
+  font-style: italic;
+  font-size: clamp(27px, 3.2vw, 44px);
+  font-weight: 400;
+  line-height: 1.3;
+  letter-spacing: -0.8px;
+  color: #f7deae;
+  margin-top: 9px;
+  white-space: nowrap;
+}
+.promo-footer {
+  position: absolute;
+  inset-inline: 5.5%;
+  bottom: 7%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+}
+.promo-footer > p {
+  font-size: 11px;
+  color: #dcc3a2;
+  letter-spacing: 0.2px;
+}
+.promo-controls {
+  display: flex;
+  align-items: center;
+  gap: 19px;
+}
+.promo-chapters {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.promo-chapters button {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.promo-chapters button > span,
+.promo-chapters button > i {
+  position: absolute;
+  top: 14px;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: #e4bc7152;
+  border-radius: 2px;
+}
+.promo-chapters button > i {
+  transform: scaleX(0);
+  transform-origin: left;
+  background: #ffe1ab;
+}
+.promo-chapters button[data-current="true"] > i {
+  transform: scaleX(var(--scene-progress));
+}
+.promo-chapters button:hover > span {
+  background: #ebc78f99;
+}
+.promo-pause {
+  width: 33px;
+  height: 33px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid #efcc934a;
+  background: #21100630;
+  color: #f5d9ab;
+}
+.promo-pause:hover {
+  background: #ffe3ad12;
+  border-color: #efcc9380;
+}
+.promo-pause:disabled,
+.promo-chapters button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+.business-flow button:focus-visible {
+  outline-color: #ffdf9b;
+}
+@media (max-width: 800px) {
+  .business-flow {
+    margin-top: -30px;
+    height: 410px;
+  }
+  .promo-copy {
+    left: 6%;
+    top: 38%;
+  }
+  .promo-chapter > p {
+    font-size: 34px;
+    letter-spacing: -1.2px;
+  }
+  .promo-chapter > span {
+    font-size: 29px;
+    letter-spacing: -0.5px;
+  }
+}
+@media (max-width: 600px) {
+  .business-flow {
+    height: 575px;
+    margin: -16px -4px 48px;
+  }
+  .promo-wordmark {
+    top: 25px;
+    left: 25px;
+    font-size: 13px;
+  }
+  .promo-wordmark svg {
+    width: 17px;
+    height: 20px;
+  }
+  .promo-copy {
+    top: 82px;
+    left: 25px;
+    right: 20px;
+    height: 115px;
+  }
+  .promo-chapter > p {
+    font-size: 36px;
+    letter-spacing: -1.3px;
+  }
+  .promo-chapter > span {
+    font-size: 29px;
+    margin-top: 5px;
+  }
+  .promo-shade {
+    background: linear-gradient(
+      180deg,
+      #1a0c0596 0%,
+      #1a0c0526 26%,
+      transparent 42%,
+      #140c08a6 100%
+    );
+  }
+  .promo-light {
+    opacity: 0.5;
+  }
+  .promo-footer {
+    left: 24px;
+    right: 20px;
+    bottom: 21px;
+    gap: 12px;
+  }
+  .promo-footer > p {
+    max-width: 100px;
+    font-size: 10px;
+    line-height: 1.8;
+  }
+  .promo-controls {
+    gap: 13px;
+  }
+  .promo-chapters {
+    gap: 5px;
+  }
+  .promo-chapters button {
+    width: 22px;
+  }
+  .fallback-sculpture {
+    left: 50%;
+    top: 46%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .promo-chapter,
+  .promo-canvas,
+  .promo-fallback {
+    transition: none;
+  }
+  .promo-pause {
+    display: none;
+  }
+  .promo-chapters button[data-current="true"] > i {
+    transform: scaleX(1);
+  }
+}
