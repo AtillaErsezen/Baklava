@@ -8,7 +8,7 @@ from string import Template
 import html
 import re
 
-from modal_train import ESTIMATORS, SEED, check_name
+from modal_train import ESTIMATORS, SCALED_TARGET_MODELS, SEED, check_name
 
 SCALED_MODELS = ("logreg", "ridge", "mlp")
 DEFAULT_METRIC = {"classification": "roc_auc", "regression": "rmse"}
@@ -37,7 +37,7 @@ import argparse
 
 import joblib
 import pandas as pd
-from sklearn.compose import ColumnTransformer
+from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import (
     KFold, StratifiedKFold, TimeSeriesSplit, cross_val_score,
@@ -115,7 +115,7 @@ $scale_line    enc = $encoder
             ("encode", enc),
         ]), cat),
     ])
-    return Pipeline([("prep", pre), ("model", $cls(**PARAMS))])
+    return Pipeline([("prep", pre), ("model", $model_expr)])
 
 
 def load_xy(path: str, target: str) -> tuple:
@@ -215,6 +215,8 @@ def render_train_script(spec: dict, purpose: str | None = None) -> str:
         num_impute_r=repr(prep.get("numeric_impute", "median")),
         scale_line='    num_steps.append(("scale", StandardScaler()))\n' if scale else "",
         encoder=encoder,
+        model_expr=(f"TransformedTargetRegressor(regressor={cls}(**PARAMS), transformer=StandardScaler())"
+                    if spec["task"] == "regression" and spec["model"] in SCALED_TARGET_MODELS else f"{cls}(**PARAMS)"),
     )
     return _no_dashes(src)
 

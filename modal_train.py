@@ -4,12 +4,18 @@ ML Factory: Modal training backend.
   modal deploy modal_train.py                                        # agent calls the deployed functions
   modal run modal_train.py --csv data/titanic.csv --target Survived  # smoke test WITHOUT the agent (do this first!)
 """
+import os
+
 import modal
 
 APP_NAME = "ml-factory"
 VOLUME_NAME = "ml-factory-data"
 DATA_DIR = "/data"
 SEED = 42
+
+# ML_FACTORY_GPU=0 deploys without GPU functions (e.g. no payment method on the workspace): tabicl leaves
+# the menu and the *_gpu functions run on the CPU image so their names still resolve.
+GPU_ENABLED = os.environ.get("ML_FACTORY_GPU", "1") == "1"
 
 # (task, model) -> (module, class, default kwargs). Claude's params override the defaults.
 ESTIMATORS = {
@@ -31,9 +37,13 @@ ESTIMATORS = {
 # Models that only run on the GPU image. train_candidate and predict_holdout forward these to their _gpu twins,
 # but the agent should call train_candidate_gpu / predict_holdout_gpu directly to skip the idle CPU hop.
 GPU_MODELS = {"tabicl"}
+SCALED_TARGET_MODELS = {"mlp"}  # regression target standardized inside the pipeline
 MODEL_MENU = {
     t: [m for (tt, m) in ESTIMATORS if tt == t] for t in ("classification", "regression")
 }
+if not GPU_ENABLED:
+    ESTIMATORS = {k: v for k, v in ESTIMATORS.items() if k[1] != "tabicl"}
+    MODEL_MENU = {t: [x for x in ms if x != "tabicl"] for t, ms in MODEL_MENU.items()}
 
 NAME_RE = r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}"  # no leading "-" or "."  # candidate and dataset names become file names
 MAX_ROUNDS_PARAM = 5000  # cap on n_estimators / iterations / max_iter (resource guard)
@@ -99,9 +109,11 @@ image = (
     # pandas/pyarrow must match the local venv: parquet is written locally, read here
     # ponytail: ML libs unpinned, pin to whatever the first green smoke test resolves
     .uv_pip_install("pandas==3.0.6", "pyarrow==25.0.1", "scikit-learn", "lightgbm", "xgboost", "catboost", "joblib")
+    .env({"ML_FACTORY_GPU": "1" if GPU_ENABLED else "0"})  # same menu inside containers
 )
 # ponytail: tabicl pulls its checkpoint from Hugging Face on every cold start, cache it on the volume if that hurts
 gpu_image = image.uv_pip_install("torch", "tabicl")
+GPU_KW = dict(image=gpu_image, gpu="L4", memory=16384) if GPU_ENABLED else dict(image=image, memory=8192)
 
 
 # ------------------------------------------------------------------ local side (your laptop)
@@ -272,6 +284,10 @@ def _build_pipeline(X, spec):
     check_name(spec.get("name", "candidate"))
     params = check_params(model, dict(spec.get("params") or {}))
     est = getattr(importlib.import_module(mod), cls)(**{**defaults, **params})
+    if task == "regression" and model in SCALED_TARGET_MODELS:  # MLP diverges on raw targets (e.g. prices)
+        from sklearn.compose import TransformedTargetRegressor
+
+        est = TransformedTargetRegressor(regressor=est, transformer=StandardScaler())
     return Pipeline([("prep", pre), ("model", est)])
 
 
@@ -412,7 +428,7 @@ def train_candidate(spec: dict) -> dict:
     return _train(spec)
 
 
-@app.function(image=gpu_image, volumes={DATA_DIR: vol}, gpu="L4", cpu=4, memory=16384, timeout=1800)
+@app.function(volumes={DATA_DIR: vol}, cpu=4, timeout=1800, **GPU_KW)
 def train_candidate_gpu(spec: dict) -> dict:
     """Same as train_candidate on an L4 GPU with tabicl + torch installed. Route tabicl specs here."""
     return _train(spec)
@@ -424,7 +440,7 @@ def fit_final(spec: dict, run_id: str) -> dict:
     return _fit_final(spec, run_id)
 
 
-@app.function(image=gpu_image, volumes={DATA_DIR: vol}, gpu="L4", cpu=4, memory=16384, timeout=1800)
+@app.function(volumes={DATA_DIR: vol}, cpu=4, timeout=1800, **GPU_KW)
 def fit_final_gpu(spec: dict, run_id: str) -> dict:
     """fit_final for foundation models (tabicl) that need the GPU image."""
     return _fit_final(spec, run_id)
@@ -484,7 +500,7 @@ def predict_holdout(spec: dict, holdout_path: str) -> dict:
     return _predict_holdout(spec, holdout_path)
 
 
-@app.function(image=gpu_image, volumes={DATA_DIR: vol}, gpu="L4", cpu=4, memory=16384, timeout=1800)
+@app.function(volumes={DATA_DIR: vol}, cpu=4, timeout=1800, **GPU_KW)
 def predict_holdout_gpu(spec: dict, holdout_path: str) -> dict:
     """predict_holdout on the GPU image, for tabicl."""
     return _predict_holdout(spec, holdout_path)

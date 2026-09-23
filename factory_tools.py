@@ -19,7 +19,7 @@ import sampling
 import search_space as ss
 import stats_tests as st
 from export import export_bundle
-from modal_train import check_name, check_params, upload_dataset
+from modal_train import GPU_ENABLED, check_name, check_params, upload_dataset
 
 HIGHER_IS_BETTER = {"roc_auc": True, "f1_macro": True, "accuracy": True, "r2": True, "rmse": False, "mae": False}
 TASK_METRICS = {"classification": ("roc_auc", "f1_macro", "accuracy"), "regression": ("rmse", "mae", "r2")}
@@ -123,7 +123,7 @@ class PipelineTools:
         task, pm = inp["task"], inp["primary_metric"]
         if pm not in TASK_METRICS[task]:
             return {"error": f"metric '{pm}' does not fit task '{task}'; allowed: {list(TASK_METRICS[task])}"}
-        veto = set(inp.get("veto_families") or [])
+        veto = set(inp.get("veto_families") or []) | (set() if GPU_ENABLED else GPU_MODELS)
         meta = self.diag["meta"]
         n_dev, n_feat = len(self.dev_df), self.df.shape[1] - 1 - len(inp.get("drop_columns") or [])
         space = ss.build_space(task, n_dev, n_feat, meta, inp.get("purpose") or {}, budget=SPACE_BUDGET)
