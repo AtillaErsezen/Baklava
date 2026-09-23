@@ -115,7 +115,8 @@ class ScriptedClient:
         elif self.step == 4:
             name, args = "finalize_model", {"candidate_name": last["recommendation"]["pick"]}
         elif self.step == 5:
-            name, args = "write_report", {"markdown": f"# Scripted run\n\n```json\n{json.dumps(last, indent=2)}\n```\n",
+            name, args = "write_report", {"why": "Scripted run: the 1-SE pick from the confirmation step.",
+                                          "caveats": ["Scripted run, no LLM judgement."],
                                           "spoken_summary": "Scripted run complete."}
         else:
             return SimpleNamespace(content="", tool_calls=None), "stop"

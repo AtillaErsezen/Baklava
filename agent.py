@@ -17,6 +17,8 @@ from modal_train import APP_NAME, MODEL_MENU, check_name, check_params, load_loc
 from factory_tools import DATA_TRY_SCHEMA_ADDITIONS, GPU_MODELS, HIGHER_IS_BETTER, PipelineTools, compact
 from providers import NebiusClient, ScriptedClient, parse_arguments, to_openai_tools
 from supabase_sync import SupabaseSync
+import purpose as purpose_mod
+import report as report_mod
 
 MAX_STEPS = 20
 MAX_NUDGES = 3
@@ -139,11 +141,14 @@ TOOLS = [
     },
     {
         "name": "write_report",
-        "description": "Save the final report. Call once, at the very end.",
+        "description": "Finish the run. Give only prose: why the pick fits the purpose, caveats in plain words, "
+                       "and a spoken summary. The harness renders every number and table from tool results.",
         "input_schema": {
             "type": "object",
-            "properties": {"markdown": {"type": "string"}, "spoken_summary": {"type": "string"}},
-            "required": ["markdown", "spoken_summary"],
+            "properties": {"why": {"type": "string", "description": "<= 600 chars"},
+                           "caveats": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+                           "spoken_summary": {"type": "string", "description": "<= 60 words, read aloud"}},
+            "required": ["why", "spoken_summary"],
         },
     },
 ]
@@ -258,10 +263,11 @@ class FactoryRun(PipelineTools):
     One instance = one dataset + target; not reused across runs."""
 
     def __init__(self, data_path: str, target: str, task_hint: str | None = None, provider: str = "nebius",
-                 purpose: str | None = None):
+                 purpose: str | None = None, run_id: str | None = None, runs_dir: str = "runs"):
         """Load the dataset, validate the target column, and profile it up front so
         get_data_profile is a free tool call (no recomputation during the agent loop)."""
-        self.run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
+        self.run_id = check_name(run_id) if run_id else time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
+        self.runs_dir = runs_dir
         self.df = load_local(data_path)
         if target not in self.df.columns:
             raise SystemExit(f"Target '{target}' not found. Columns: {list(self.df.columns)}")
@@ -395,7 +401,8 @@ class FactoryRun(PipelineTools):
             return {"error": f"Unknown candidate. Known: {list(self.specs)}"}
         self.emit("status", {"msg": f"Training final model '{name}' on all data"})
         fn = self.fns["fit_final_gpu" if self.specs[name]["model"] in GPU_MODELS else "fit_final"]
-        out = fn.remote(self.specs[name], self.run_id)
+        full = {k: v for k, v in self.specs[name].items() if k not in ("train_rows", "repeats", "measure_latency")}
+        out = fn.remote({**full, "dataset_path": self._full()}, self.run_id)  # the user gets a model fit on every row
         self.final = {"name": name, "spec": self.specs[name], **out}
         self.emit("final_model", self.final)
         return {**out, "export": self.export_user_model(name)}
@@ -403,9 +410,11 @@ class FactoryRun(PipelineTools):
     def tool_write_report(self, inp):
         """Store the agent's final markdown report and short spoken summary. Calling
         this is also the loop's stop signal: `run()` breaks right after."""
-        self.report = {"markdown": inp["markdown"], "spoken_summary": inp["spoken_summary"]}
+        prose = {"why": inp.get("why", ""), "caveats": inp.get("caveats") or [],
+                 "spoken_summary": inp.get("spoken_summary", "")}
+        self.report = report_mod.build_report(self.report_state(), prose)
         self.emit("report", self.report)
-        return {"saved": True}
+        return {"saved": True, "numbers_removed_by_claim_check": self.report["markdown"].count("[number removed")}
 
     # ---- loop
     def run(self):
@@ -414,7 +423,13 @@ class FactoryRun(PipelineTools):
         send results back as role="tool" messages. Bad arguments go back to the model as
         a tool error (it self-corrects). Stops when the model stops calling tools, after
         write_report, or after MAX_STEPS, then always saves whatever was produced."""
-        self.sync.start(self.df, self.data_path, self.target, self.task)
+        self.sync.start(self.df, self.data_path, self.target, self.task, purpose=self.purpose,
+                        llm_model=getattr(self.client, "model", "scripted"))
+        self.purpose_spec = purpose_mod.purpose_spec(self.client, self.purpose, self.task, self.diag["meta"])
+        self.sync.update(split={"dev": len(self.dev_df), "search_val": len(self.val_df),
+                                "hidden": len(self.hidden_df), "time_column": self.time_column},
+                         profile={"findings": self.diag["findings"], "meta": self.diag["meta"],
+                                  "purpose_spec": self.purpose_spec})
         self.emit("run_start", {"dataset": self.dataset_name, "target": self.target,
                                 "rows": self.profile["n_rows"], "features": self.profile["n_features"]})
         hint = f" The user says this is a {self.task_hint} task." if self.task_hint else ""
@@ -458,17 +473,19 @@ class FactoryRun(PipelineTools):
             if self.report:
                 break
 
-        self.emit("usage", self.client.ledger.totals())
+        usage = {**self.client.ledger.totals(), "modal_usd": self.modal_usd()}
+        self.emit("usage", usage)
         self.remember()
         self.save()
-        self.sync.finish("done" if self.report else "incomplete", self.report)
+        self.sync.finish("done" if self.report else "incomplete", self.report, usage=usage,
+                         recommended=(self.final or {}).get("name"), model_path=(self.final or {}).get("model_path"))
 
     def save(self):
         """Persist this run under runs/<run_id>_*: the full event timeline as jsonl
         (for the replay-mode fallback), profile/results/final as json, and the
         markdown report if one was written. Called once at the end of run()."""
-        os.makedirs("runs", exist_ok=True)
-        prefix = f"runs/{self.run_id}"
+        os.makedirs(self.runs_dir, exist_ok=True)
+        prefix = f"{self.runs_dir}/{self.run_id}"
         with open(f"{prefix}_events.jsonl", "w", encoding="utf-8") as f:
             f.writelines(json.dumps(e, ensure_ascii=False) + "\n" for e in self.events)
         with open(f"{prefix}_results.json", "w", encoding="utf-8") as f:

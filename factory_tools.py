@@ -12,6 +12,7 @@ from sklearn.metrics import (accuracy_score, f1_score, mean_absolute_error, mean
                              roc_auc_score)
 
 import diagnostics as dg
+import ensemble as ens
 import external_data as xd
 import memory
 import racing
@@ -32,6 +33,10 @@ CONFIRM_REPEATS = 2  # 5-fold x 2 repeats = 10 paired folds
 ROPE = 0.005         # practical-equivalence band for the Bayesian test
 GPU_MODELS = {"tabicl"}
 COMPACT_KEEP = 2     # tool results kept verbatim in context; older ones are truncated
+# Modal list prices (modal.com/pricing, 2026-09): per core-second, per GiB-second, per L4-second.
+MODAL_CORE_S, MODAL_GIB_S, MODAL_L4_S = 0.0000131, 0.00000222, 0.000222
+CPU_FN_COST_S = 4 * MODAL_CORE_S + 8 * MODAL_GIB_S       # train_candidate: cpu=4, 8 GiB
+GPU_FN_COST_S = MODAL_L4_S + 4 * MODAL_CORE_S + 16 * MODAL_GIB_S
 # Properties for agent.py's data_try input_schema (left_key/right_key are then only required for enrich).
 DATA_TRY_SCHEMA_ADDITIONS = {
     "mode": {"type": "string", "enum": ["enrich", "more_rows"],
@@ -93,9 +98,11 @@ class PipelineTools:
             self.diag["findings"].insert(0, {"check": "cross_split_duplicates", "severity": 2,
                                              "finding": f"{dups} hidden rows repeat a dev row exactly; hidden scores "
                                                         "may be optimistic. Deduplicate before trusting them."})
-        self.dev_path = self.hidden_path = None
-        self.search = self.confirmed = self.export = None
+        self.dev_path = self.hidden_path = self.val_path = self.full_data_path = None
+        self.search = self.confirmed = self.export = self.purpose_spec = None
         self.memory_path = None
+        self.modal_seconds = {"cpu": 0.0, "gpu": 0.0}
+        self.external = []
 
     # ---- plumbing
     def _dev(self) -> str:
@@ -109,7 +116,19 @@ class PipelineTools:
         cpu = [s for s in specs if s["model"] not in GPU_MODELS]
         gpu = [s for s in specs if s["model"] in GPU_MODELS]
         out = list(self.fns["train_candidate"].map(cpu)) if cpu else []
-        return out + (list(self.fns["train_candidate_gpu"].map(gpu)) if gpu else [])
+        out_gpu = list(self.fns["train_candidate_gpu"].map(gpu)) if gpu else []
+        self.modal_seconds["cpu"] += sum(r.get("fit_seconds") or 0 for r in out)
+        self.modal_seconds["gpu"] += sum(r.get("fit_seconds") or 0 for r in out_gpu)
+        return out + out_gpu
+
+    def modal_usd(self) -> float:
+        """Approximate Modal spend from measured container seconds (list prices)."""
+        return round(self.modal_seconds["cpu"] * CPU_FN_COST_S + self.modal_seconds["gpu"] * GPU_FN_COST_S, 4)
+
+    def _upload_once(self, attr: str, df) -> str:
+        if getattr(self, attr) is None:
+            setattr(self, attr, upload_dataset(df))
+        return getattr(self, attr)
 
     def _spec(self, base: dict, c: dict, n_rows: int | None) -> dict:
         spec = {**base, "name": c["name"], "model": c["model"], "params": c.get("params") or {},
@@ -124,6 +143,8 @@ class PipelineTools:
         out = {"findings": self.diag["findings"], "meta": {k: _r(v, 3) for k, v in self.diag["meta"].items()},
                "rows": {"dev": len(self.dev_df), "search_val": len(self.val_df), "hidden_locked": len(self.hidden_df)},
                "split": f"time: latest 20% by {self.time_column}" if self.time_column else "random, stratified"}
+        if self.purpose_spec:
+            out["purpose_spec"] = self.purpose_spec
         self.emit("diagnostics", {"findings": out["findings"], "rows": out["rows"]})
         if inp.get("response_format") == "detailed":
             out["catalog"] = dg.catalog()
@@ -157,8 +178,13 @@ class PipelineTools:
                 "cv_folds": 5, "time_column": inp.get("time_column"), "drop_columns": inp.get("drop_columns") or []}
         by_name = {c["name"]: c for c in configs}
 
+        rung_of = {r["n_rows"]: r["rung"] for r in schedule}
+        self.sync.update(primary_metric=pm)
+
         def evaluate(cfgs, n_rows):
             res = self._map([self._spec(base, c, n_rows) for c in cfgs])
+            self.sync.candidates([self._candidate_row(r, by_name, pm, "race", rung=rung_of.get(n_rows), rows=n_rows)
+                                  for r in res])
             return [{"name": r["name"], "ok": True, "folds": r["metrics"][pm]["folds"], "fit_seconds": r["fit_seconds"]}
                     if r.get("ok") else {"name": r.get("name"), "ok": False} for r in res]
 
@@ -172,9 +198,10 @@ class PipelineTools:
         top = [{"name": t["name"], "family": by_name[t["name"]].get("family", by_name[t["name"]]["model"]), "mean": _r(t["mean"]), "std": _r(t["std"]),
                 "params": by_name[t["name"]].get("params")} for t in out["top"]]
         self.emit("leaderboard", {"round": "race", "primary_metric": pm, "rows": top})
-        return {"space_size": len(space), "raced": len(configs), "warm_start": len(warm), "n_star": n_star,
-                "justification": sizing["justification"], "schedule": schedule, "fits": out["fits"],
-                "stopped": out["stopped"], "rungs": out["rungs"], "top": top}
+        self._last_search = {"space_size": len(space), "raced": len(configs), "warm_start": len(warm),
+                             "n_star": n_star, "justification": sizing["justification"], "schedule": schedule,
+                             "fits": out["fits"], "stopped": out["stopped"], "rungs": out["rungs"], "top": top}
+        return self._last_search
 
     # ---- confirmation + hidden test
     def tool_confirm_and_test(self, inp):
@@ -218,20 +245,33 @@ class PipelineTools:
                           "fit_s": r["fit_s"], "predict_ms": r["predict_ms"],
                           "big_o": {k: ss.COMPLEXITY.get(r["family"], {}).get(k) for k in ("train", "predict")},
                           "params": self.search["by_name"][r["name"]].get("params")})
+        self.sync.candidates([self._candidate_row(res[t["name"]], self.search["by_name"], pm, "confirm", rows=n,
+                                                  p_vs_best=t["p_vs_best"], tie_with_best=t["tie_group"] == 0)
+                              for t in table] +
+                             [{"name": t["name"], "family": t["family"], "stage": "hidden", "ok": True,
+                               "hidden_score": t["hidden"], "params": t["params"]} for t in table if t["hidden"] is not None])
         front = _pareto(table, sign)
         for t in table:
             t["pareto"] = t["name"] in front
         table.sort(key=lambda t: -sign * t["cv_mean"])
         self.confirmed = {"pm": pm, "rows": {t["name"]: t for t in table}, "pick": pick}
         out = {"primary_metric": pm, "table": table, "recommendation": pick, "tie_groups": groups,
+               "ensemble": self._ensemble([self.specs[r["name"]] for r in rows], pm, task, best["name"]),
                "notes": "p_vs_best: Nadeau-Bengio corrected t on 10 paired folds; hidden: one-shot holdout."}
+        self._last_confirm = out
         self.emit("confirm", out)
         return out
 
     def _hidden_test(self, specs: list[dict], pm: str, task: str) -> dict:
         """Fit each spec on the full dev split, score the locked hidden rows once."""
-        if self.hidden_path is None:
-            self.hidden_path = upload_dataset(self.hidden_df)
+        self._upload_once("hidden_path", self.hidden_df)
+        preds = self._predict(specs, self.hidden_path)
+        self._hidden_preds = preds
+        out = {k: {"score": _r(_hidden_score(pm, p["y_true"], p["pred"], p.get("proba")))} for k, p in preds.items()}
+        return self._hidden_stats(out, preds, pm, task)
+
+    def _predict(self, specs: list[dict], path: str) -> dict:
+        """Fit each spec on the full dev split and predict the frame at path (one call per spec)."""
         preds = {}
         for s in specs:
             full = {k: v for k, v in s.items() if k != "train_rows"}
@@ -239,8 +279,10 @@ class PipelineTools:
             try:
                 preds[s["name"]] = fn.remote(full, self.hidden_path)
             except Exception as e:
-                self.emit("status", {"msg": f"hidden test failed for {s['name']}: {type(e).__name__}"})
-        out = {k: {"score": _r(_hidden_score(pm, p["y_true"], p["pred"], p.get("proba")))} for k, p in preds.items()}
+                self.emit("status", {"msg": f"prediction failed for {s['name']}: {type(e).__name__}"})
+        return preds
+
+    def _hidden_stats(self, out: dict, preds: dict, pm: str, task: str) -> dict:
         if not preds:
             return out
         sign = 1 if HIGHER_IS_BETTER[pm] else -1
@@ -258,6 +300,59 @@ class PipelineTools:
                     err = lambda y, q: -float(np.mean(np.abs(np.asarray(y) - np.asarray(q))))
                     out[k]["p_vs_best"] = st.paired_bootstrap(err, b["y_true"], b["pred"], p["pred"])["p"]
         return out
+
+    def _candidate_row(self, r: dict, by_name: dict, pm: str, stage: str, rows=None, **extra) -> dict:
+        """One evaluation as a candidates-table row (Supabase v2)."""
+        c = by_name.get(r.get("name"), {})
+        m = (r.get("metrics") or {}).get(pm, {})
+        return {"name": r.get("name"), "family": c.get("family", c.get("model", "unknown")), "stage": stage,
+                "train_rows": rows, "params": c.get("params") or {}, "preprocessing": c.get("preprocessing") or {},
+                "ok": bool(r.get("ok")), "error": (r.get("error") or "")[:300] or None, "cv_mean": m.get("mean"),
+                "cv_std": m.get("std"), "train_mean": m.get("train_mean"), "metrics": {pm: m.get("folds")},
+                "fit_seconds": r.get("fit_seconds"), "predict_ms": r.get("predict_ms"), **extra}
+
+    def _ensemble(self, specs: list[dict], pm: str, task: str, best: str) -> dict | None:
+        """Caruana weights on the untouched search_val split, then one comparison on hidden."""
+        hidden = getattr(self, "_hidden_preds", {})
+        if len(specs) < 2 or len(hidden) < 2 or len(self.val_df) < 30:
+            return None
+        try:
+            val = self._predict(specs, self._upload_once("val_path", self.val_df))
+            key = "proba" if task == "classification" else "pred"
+            names = [n for n in val if val[n].get(key) is not None and n in hidden and hidden[n].get(key) is not None]
+            if len(names) < 2 or (task == "classification" and len(val[names[0]].get("classes") or []) != 2):
+                return None
+            hib = HIGHER_IS_BETTER[pm]
+            fit = ens.caruana({n: np.asarray(val[n][key], float) for n in names},
+                              np.asarray(val[names[0]]["y_true"]), pm, hib)
+            cmp = ens.compare_on_hidden({n: np.asarray(hidden[n][key], float) for n in names},
+                                        np.asarray(hidden[names[0]]["y_true"]), fit["weights"], best, pm, hib)
+            out = {"weights": {k: _r(v, 3) for k, v in fit["weights"].items() if v > 0},
+                   "val_score": _r(fit["val_score"]), **{k: _r(v) if isinstance(v, float) else v for k, v in cmp.items()}}
+            self.emit("status", {"msg": f"ensemble tested on hidden: keep={out.get('keep')}"})
+            return out
+        except Exception as e:
+            self.emit("status", {"msg": f"ensemble skipped: {type(e).__name__}"})
+            return None
+
+    def _full(self) -> str:
+        """All rows (dev + search_val + hidden) on Modal, for the final model the user receives."""
+        return self._upload_once("full_data_path", self.df)
+
+    def report_state(self) -> dict:
+        """Everything report.build_report needs, taken from tool results only."""
+        conf = getattr(self, "_last_confirm", None)
+        return {
+            "dataset": {"name": self.dataset_name, "rows": len(self.df), "features": self.df.shape[1] - 1,
+                        "target": self.target, "task": self.task, "purpose": self.purpose},
+            "split": {"dev": len(self.dev_df), "search_val": len(self.val_df), "hidden_locked": len(self.hidden_df),
+                      "method": f"time: latest 20% by {self.time_column}" if self.time_column else "random, stratified"},
+            "findings": self.diag["findings"],
+            "dropped_columns": (self.search or {}).get("base", {}).get("drop_columns", []),
+            "search": getattr(self, "_last_search", None), "confirm": conf, "final": self.final,
+            "export": self.export, "external": self.external,
+            "usage": {**self.client.ledger.totals(), "modal_usd": self.modal_usd()},
+        }
 
     # ---- external data
     def tool_data_search(self, inp):
@@ -307,6 +402,7 @@ class PipelineTools:
         verdict = "improves" if test["p_one_sided"] < 0.05 else ("worse" if test["p_one_sided"] > 0.95 else "no_gain")
         out = {"source": links[0], "verdict": verdict, "delta": test["mean_diff"], "ci": [test["ci_low"], test["ci_high"]],
                "p_one_sided": test["p_one_sided"], **rep}
+        self.external.append(out)
         self.emit("external_trial", out)
         return out
 
@@ -317,7 +413,7 @@ class PipelineTools:
         metrics = {k: row.get(k) for k in ("cv_mean", "ci", "hidden", "p_vs_best", "ece") if row.get(k) is not None}
         spec = {**self.specs[name], "primary_metric": (self.search or {}).get("pm")}
         extra = {"complexity": row.get("big_o")} if row.get("big_o") else None
-        self.export = export_bundle(spec, metrics, f"runs/{self.run_id}_export", purpose=self.purpose,
+        self.export = export_bundle(spec, metrics, f"{getattr(self, 'runs_dir', 'runs')}/{self.run_id}_export", purpose=self.purpose,
                                     caveats=[f["finding"] for f in self.diag["findings"][:5]], extra=extra)
         self.emit("export", self.export)
         return self.export

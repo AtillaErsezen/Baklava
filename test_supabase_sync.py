@@ -71,6 +71,33 @@ def test_failure_disables_sync_without_raising(tmp="runs/_sb.csv"):
     assert SupabaseSync(None, "run-4").start(_df(), tmp, "y", "classification") is False
 
 
+
+def test_v2_schema_run_row_and_candidates(tmp="runs/_sb.csv"):
+    """Emre's schema: runs keyed by run_id, statuses running/completed/failed, a candidates table."""
+    _df().to_csv(tmp, index=False)
+    c = FakeClient()
+    sb = SupabaseSync(c, "run-5", schema="v2")
+    assert sb.start(_df(), tmp, "y", "classification", purpose="find churners", llm_model="qwen")
+    name, op, run = c.db[0]
+    assert (name, op) == ("runs", "insert") and run["run_id"] == "run-5" and run["status"] == "running"
+    assert run["n_rows"] == 3 and run["n_features"] == 1 and run["purpose"] == "find churners"
+    sb.candidates([{"name": "lgbm_a", "family": "lightgbm", "stage": "race", "rung": 0, "ok": True, "cv_mean": 0.6}])
+    name, op, rows = c.db[-1]
+    assert name == "candidates" and rows[0]["run_id"] == "run-5" and rows[0]["params"] == {}
+    sb.finish("done", report={"markdown": "# r", "spoken_summary": "s"}, recommended="lgbm_a", usage={"usd": 0.01})
+    name, op, row, where = c.db[-1]
+    assert row["status"] == "completed" and row["report_md"] == "# r" and row["recommended"] == "lgbm_a"
+    assert where == ("run_id", "run-5")
+
+
+def test_v1_schema_ignores_candidates():
+    c = FakeClient()
+    sb = SupabaseSync(c, "run-6", schema="v1")
+    sb.ok = True
+    sb.candidates([{"name": "x", "family": "logreg", "stage": "race", "ok": True}])
+    assert not any(r[0] == "candidates" for r in c.db)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
