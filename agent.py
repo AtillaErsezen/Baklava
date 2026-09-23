@@ -258,8 +258,9 @@ def _maybe_supabase():
     if not (url and key):
         return None
     try:
-        from supabase import create_client
-        return create_client(url, key)
+        from supabase import ClientOptions, create_client
+        # short timeouts: a slow Supabase must fail fast, never stall the agent loop (postgrest default is 120 s)
+        return create_client(url, key, options=ClientOptions(postgrest_client_timeout=5, storage_client_timeout=5))
     except Exception as e:
         print("Supabase disabled:", e)
         return None
