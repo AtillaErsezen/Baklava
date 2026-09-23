@@ -188,8 +188,13 @@ def _check_target(path: str, target: str) -> None:
 
 def _read_capped(path: str, cap: int) -> bytes:
     """Read a regular file without following symlinks: 404 if absent or not a file, 500 if over cap."""
+    # O_NOFOLLOW / O_NONBLOCK exist on Linux (production) but not on Windows (local dev and tests), where an
+    # explicit symlink check stands in for them.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        if not hasattr(os, "O_NOFOLLOW") and os.path.islink(path):
+            raise OSError("symlink")
+        fd = os.open(path, flags)
     except OSError:
         raise _err(404, "not found") from None
     with os.fdopen(fd, "rb") as f:
