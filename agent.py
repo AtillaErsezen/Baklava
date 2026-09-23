@@ -9,6 +9,7 @@ import json
 import os
 import time
 import uuid
+from types import SimpleNamespace
 
 import anthropic
 import modal
@@ -201,6 +202,40 @@ def profile_data(df: pd.DataFrame, target: str) -> dict:
     }
 
 
+# ------------------------------------------------------------------ dry run (no API key)
+
+class ScriptedClient:
+    """Stand-in for anthropic.Anthropic(): replays a fixed tool sequence so the whole pipeline
+    except Claude's reasoning (Modal, events, saving) can be tested without an API key."""
+
+    def __init__(self, profile):
+        self.profile, self.step, self.messages = profile, 0, self
+
+    def create(self, messages, **_):
+        self.step += 1
+        last = json.loads(messages[-1]["content"][0]["content"]) if self.step > 1 else None
+        task = self.profile["target"]["suggested_task"]
+        if self.step == 1:
+            name, inp = "get_data_profile", {}
+        elif self.step == 2:
+            bad = {"id_like", "possible_leakage", "constant"}
+            name, inp = "run_experiments", {
+                "rationale": "Dry run: every menu model with defaults, flagged columns dropped.",
+                "task": task, "primary_metric": "roc_auc" if task == "classification" else "rmse",
+                "drop_columns": [c["name"] for c in self.profile["columns"] if bad & set(c.get("flags", []))],
+                "candidates": [{"name": m, "model": m} for m in MODEL_MENU[task]]}
+        elif self.step == 3:
+            name, inp = "finalize_model", {"candidate_name": last["leaderboard"][0]["name"]}
+        elif self.step == 4:
+            name, inp = "write_report", {"markdown": f"# Dry run\n\n```json\n{json.dumps(last, indent=2)}\n```\n",
+                                         "spoken_summary": "Dry run complete."}
+        else:
+            return SimpleNamespace(stop_reason="end_turn", content=[])
+        return SimpleNamespace(stop_reason="tool_use", content=[
+            SimpleNamespace(type="text", text=f"(dry run) calling {name}"),
+            SimpleNamespace(type="tool_use", id=f"dry{self.step}", name=name, input=inp)])
+
+
 # ------------------------------------------------------------------ the agent
 
 def _maybe_supabase():
@@ -223,7 +258,7 @@ class FactoryRun:
     its tools (profile/inspect/experiment/finalize/report), and save the result.
     One instance = one dataset + target; not reused across runs."""
 
-    def __init__(self, data_path: str, target: str, task_hint: str | None = None):
+    def __init__(self, data_path: str, target: str, task_hint: str | None = None, dry_run: bool = False):
         """Load the dataset, validate the target column, and profile it up front so
         get_data_profile is a free tool call (no recomputation during the agent loop)."""
         self.run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
@@ -237,7 +272,7 @@ class FactoryRun:
         self.rounds = 0
         self.specs, self.results, self.events = {}, [], []
         self.final, self.report = None, None
-        self.client = anthropic.Anthropic()
+        self.client = ScriptedClient(self.profile) if dry_run else anthropic.Anthropic()
         self.train_fn = modal.Function.from_name(APP_NAME, "train_candidate")
         self.final_fn = modal.Function.from_name(APP_NAME, "fit_final")
         self.supabase = _maybe_supabase()
@@ -427,5 +462,6 @@ if __name__ == "__main__":
     ap.add_argument("data")
     ap.add_argument("--target", required=True)
     ap.add_argument("--task", choices=["classification", "regression"])
+    ap.add_argument("--dry-run", action="store_true", help="scripted agent, no Anthropic API key needed")
     args = ap.parse_args()
-    FactoryRun(args.data, args.target, args.task).run()
+    FactoryRun(args.data, args.target, args.task, args.dry_run).run()

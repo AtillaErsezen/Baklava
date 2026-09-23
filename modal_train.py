@@ -31,17 +31,11 @@ MODEL_MENU = {
 app = modal.App(APP_NAME)
 vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 image = (
-    modal.Image.debian_slim(python_version="3.11")
+    modal.Image.debian_slim(python_version="3.13")
     .apt_install("libgomp1")  # lightgbm needs OpenMP
-    .pip_install(
-        "numpy==1.26.4",
-        "pandas==2.2.3",
-        "pyarrow==17.0.0",
-        "scikit-learn==1.5.2",
-        "lightgbm==4.5.0",
-        "xgboost==2.1.1",
-        "joblib==1.4.2",
-    )
+    # pandas/pyarrow must match the local venv: parquet is written locally, read here
+    # ponytail: ML libs unpinned, pin to whatever the first green smoke test resolves
+    .uv_pip_install("pandas==3.0.6", "pyarrow==25.0.1", "scikit-learn", "lightgbm", "xgboost", "joblib")
 )
 
 
