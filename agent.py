@@ -16,6 +16,7 @@ import pandas as pd
 from modal_train import APP_NAME, MODEL_MENU, check_name, check_params, load_local
 from factory_tools import GPU_MODELS, HIGHER_IS_BETTER, PipelineTools, compact
 from providers import NebiusClient, ScriptedClient, parse_arguments, to_openai_tools
+from supabase_sync import SupabaseSync
 
 MAX_STEPS = 20
 MAX_NUDGES = 3
@@ -274,6 +275,8 @@ class FactoryRun(PipelineTools):
             "train_candidate", "train_candidate_gpu", "fit_final", "fit_final_gpu", "predict_holdout", "predict_holdout_gpu")}
         self.train_fn, self.final_fn = self.fns["train_candidate"], self.fns["fit_final"]
         self.supabase = _maybe_supabase()
+        self.sync = SupabaseSync(self.supabase, self.run_id)
+        self.data_path = data_path
         self.setup_pipeline(task_hint or self.profile["target"]["suggested_task"], purpose)
 
     # ---- event stream: stdout + jsonl (replay mode for the demo) + optional Supabase (live UI)
@@ -285,7 +288,7 @@ class FactoryRun(PipelineTools):
                  "payload": json.loads(json.dumps(payload, default=str))}
         self.events.append(event)
         print(f"[{kind}] {json.dumps(payload, default=str, ensure_ascii=False)[:400]}")
-        if self.supabase:
+        if self.supabase and self.sync.ok:
             try:
                 self.supabase.table("events").insert(event).execute()
             except Exception as e:
@@ -409,6 +412,7 @@ class FactoryRun(PipelineTools):
         send results back as role="tool" messages. Bad arguments go back to the model as
         a tool error (it self-corrects). Stops when the model stops calling tools, after
         write_report, or after MAX_STEPS, then always saves whatever was produced."""
+        self.sync.start(self.df, self.data_path, self.target, self.task)
         self.emit("run_start", {"dataset": self.dataset_name, "target": self.target,
                                 "rows": self.profile["n_rows"], "features": self.profile["n_features"]})
         hint = f" The user says this is a {self.task_hint} task." if self.task_hint else ""
@@ -455,6 +459,7 @@ class FactoryRun(PipelineTools):
         self.emit("usage", self.client.ledger.totals())
         self.remember()
         self.save()
+        self.sync.finish("done" if self.report else "incomplete", self.report)
 
     def save(self):
         """Persist this run under runs/<run_id>_*: the full event timeline as jsonl
