@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ML Factory</title>
+<meta name="description" content="Upload a CSV. An open-weight agent checks the data, races 3,000 pipelines on sized samples, confirms the top 3 with paired tests and hands back a model you can retrain.">
+<meta name="color-scheme" content="light dark">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,300..700&display=swap">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+<script defer src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js" integrity="sha384-HOvlOYPIs/zjoIkWUGXkVmXsjr8GuZLV+Q+rcPwmJOVZVpvTSXQChiN4t9Euv9Vc" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/ScrollTrigger.min.js" integrity="sha384-P8VzCVnT9NBUkMrpcIZrJbA7EBjJvh/fJS6PmP+4nLIM284DtsImIv8D0fFjIkeh" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/SplitText.min.js" integrity="sha384-xb96EMJeax+NLXMC88ZBa1xAeAW+kn+horHh/zFlbMLG2UPWhMJJSlv7fi57hS+Q" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/lenis@1.3.26/dist/lenis.min.js" integrity="sha384-jqpi9VmOdhyLoLURgjCn7EpnG9BbnHW57ibIZoeaIU+erWDH3k8fQQg0xH2ySjnw" crossorigin="anonymous"></script>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="brand" href="./" aria-label="ML Factory, home">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18l-7 8v7l-4 2v-9z"/></svg>
+      <span>ML Factory</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#how" data-landing>How it works</a>
+      <a href="?replay=fixture">Recorded run</a>
+    </nav>
+    <a class="btn btn-primary btn-sm nav-cta" href="#app" data-cta>Upload a dataset</a>
+  </div>
+</header>
+
+<main id="main" tabindex="-1">
+
+  <section class="hero" id="top" aria-labelledby="hero-title" data-landing>
+    <canvas class="hero-canvas" id="shader" aria-hidden="true"></canvas>
+    <div class="hero-inner container">
+      <div class="hero-copy">
+        <h1 class="hero-title" id="hero-title">Upload a CSV. Get the model that beat 2,999 others.</h1>
+        <p class="hero-sub" data-hero-fade>An open-weight agent checks your data, races pipelines on sized samples, and scores the pick once on rows it never saw.</p>
+        <div class="hero-actions" data-hero-fade>
+          <a class="btn btn-primary" href="#app" data-cta>Upload a dataset</a>
+          <a class="btn btn-glass" href="?replay=fixture">Watch a recorded run</a>
+        </div>
+      </div>
+      <figure class="proof" data-hero-fade>
+        <div class="proof-head">
+          <span class="sev sev-3"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12.802 2.165l5.575 2.389c.48 .206 .863 .589 1.07 1.07l2.388 5.574c.22 .512 .22 1.092 0 1.604l-2.389 5.575c-.206 .48 -.589 .863 -1.07 1.07l-5.574 2.388c-.512 .22 -1.092 .22 -1.604 0l-5.575 -2.389a2.036 2.036 0 0 1 -1.07 -1.07l-2.388 -5.574a2.036 2.036 0 0 1 0 -1.604l2.389 -5.575c.206 -.48 .589 -.863 1.07 -1.07l5.574 -2.388a2.036 2.036 0 0 1 1.604 0z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>Must act</span>
+          <code class="proof-check">leakage</code>
+        </div>
+        <blockquote class="proof-quote">One column, <code>refund_issued</code>, predicts churn almost perfectly by itself. Refunds are issued after a customer leaves, so I am removing it before any model trains.</blockquote>
+        <figcaption class="proof-cap">Agent note at 0:04 in a recorded run on churn.csv</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="how" id="how" aria-labelledby="how-title" data-landing tabindex="-1">
+    <div class="how-inner container">
+      <div class="how-copy">
+        <h2 class="section-title" id="how-title" data-reveal>What happens between upload and download</h2>
+        <p class="how-note" data-reveal>Numbers from a recorded run on churn.csv: 3,000 rows, 9 features, target <code>Churn</code>.</p>
+        <ol class="stages" id="stages" data-reveal>
+          <li class="stage"><h3>Upload</h3><div class="stage-body"><p>The server profiles every column and suggests a target. Before anything else runs, 600 rows (20%) go into a locked hidden set.</p></div></li>
+          <li class="stage"><h3>33 checks</h3><div class="stage-body"><p>Leakage, ID columns, missing values, outliers, imbalance and drift. Here the checks flagged <code>refund_issued</code>, which is only filled after a customer leaves.</p></div></li>
+          <li class="stage"><h3>Sample size n*</h3><div class="stage-body"><p>A Hoeffding bound says how many rows a fair comparison needs. Early rounds use 500 rows, so weak pipelines drop out cheaply.</p></div></li>
+          <li class="stage"><h3>Race</h3><div class="stage-body"><p>3,000 pipelines generated, the 243 most promising raced. Each rung triples the rows and keeps a third; paired tests cut the ones that are clearly worse.</p></div></li>
+          <li class="stage"><h3>Confirm</h3><div class="stage-body"><p>The top 3 run 10 paired folds. A corrected t-test and a Bayesian check decide which gaps are real.</p></div></li>
+          <li class="stage"><h3>Hidden test</h3><div class="stage-body"><p>The pick is scored once on the 600 locked rows. Nothing gets tuned after that.</p></div></li>
+          <li class="stage"><h3>Your model</h3><div class="stage-body"><p>You download the fitted model, its parameters, a model card and a Python script that retrains it on new data.</p></div></li>
+        </ol>
+      </div>
+      <div class="how-visual" aria-hidden="true" data-reveal>
+        <div class="readout">
+          <span class="readout-num" id="readout-num">3,000</span>
+          <span class="readout-label" id="readout-label">rows uploaded</span>
+        </div>
+        <div class="plates">
+          <div class="plate" data-plate="0">
+            <div class="split" id="how-split"></div>
+          </div>
+          <div class="plate" data-plate="1">
+            <ul class="mini-checks" id="how-checks"></ul>
+          </div>
+          <div class="plate" data-plate="2">
+            <div class="nstar" id="how-nstar"></div>
+          </div>
+          <div class="plate" data-plate="3">
+            <div class="funnel funnel-demo" id="how-funnel"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="app" id="app" aria-labelledby="app-title" tabindex="-1">
+    <div class="container">
+      <div class="app-head">
+        <h2 class="section-title" id="app-title" data-reveal>Run it on your data</h2>
+      </div>
+
+      <ol class="stepper" id="stepper" aria-label="Steps">
+        <li><button type="button" data-step="upload" aria-current="step"><span class="step-n" aria-hidden="true">1</span><span>Upload</span></button></li>
+        <li><button type="button" data-step="check" disabled><span class="step-n" aria-hidden="true">2</span><span>Check the data</span></button></li>
+        <li><button type="button" data-step="goal" disabled><span class="step-n" aria-hidden="true">3</span><span>Describe the goal</span></button></li>
+        <li><button type="button" data-step="run" disabled><span class="step-n" aria-hidden="true">4</span><span>Run</span></button></li>
+        <li><button type="button" data-step="result" disabled><span class="step-n" aria-hidden="true">5</span><span>Results</span></button></li>
+      </ol>
+
+      <div class="panels">
+
+        <section class="panel" data-panel="upload" aria-labelledby="p-upload">
+          <h3 class="panel-title" id="p-upload" tabindex="-1">Upload a dataset</h3>
+          <div class="upload-layout">
+          <form class="upload-form" id="upload-form" novalidate>
+            <label class="drop" id="drop" for="file">
+              <input class="visually-hidden" type="file" id="file" name="file" accept=".csv,text/csv" aria-describedby="file-hint file-error">
+              <span class="drop-icon" aria-hidden="true"></span>
+              <span class="drop-title">Drop a CSV here</span>
+              <span class="drop-or">or <span class="link-like">choose a file</span></span>
+              <span class="drop-hint" id="file-hint">Up to 50 MB, 50 to 1,000,000 rows, 2 to 500 columns.</span>
+            </label>
+            <div class="file-chip" id="file-chip" hidden></div>
+            <p class="field-error" id="file-error" role="alert"></p>
+
+            <div class="field">
+              <label for="access">Access code</label>
+              <input type="password" id="access" name="access" autocomplete="off" spellcheck="false" required aria-describedby="access-hint access-error">
+              <p class="field-hint" id="access-hint">Ask the organisers for the code. It stays in this tab.</p>
+              <p class="field-error" id="access-error" role="alert"></p>
+            </div>
+
+            <div class="progress" id="upload-progress" hidden><span class="progress-bar"></span></div>
+            <p class="form-error" id="upload-error" role="alert"></p>
+
+            <div class="form-actions">
+              <button class="btn btn-primary" type="submit" id="upload-btn">Upload and profile</button>
+              <button class="btn btn-secondary" type="button" id="sample-btn" hidden>Use the sample churn.csv</button>
+            </div>
+          </form>
+          <aside class="recent" id="recent" aria-labelledby="recent-title" hidden>
+            <h4 class="block-title" id="recent-title">Recent runs</h4>
+            <p class="block-sub">Open one to replay it, or follow it live while it runs.</p>
+            <ol class="recent-list" id="recent-list"></ol>
+          </aside>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="check" aria-labelledby="p-check" hidden>
+          <h3 class="panel-title" id="p-check" tabindex="-1">Check the data</h3>
+          <p class="panel-sub" id="check-summary"></p>
+          <div class="field target-field">
+            <label for="target">Which column should the model predict?</label>
+            <select id="target" name="target" aria-describedby="target-hint"></select>
+            <p class="field-hint" id="target-hint"></p>
+          </div>
+          <h4 class="sub-title">Columns</h4>
+          <div class="table-wrap" data-lenis-prevent>
+            <table class="data-table" id="columns-table">
+              <thead><tr><th scope="col">Column</th><th scope="col">Type</th><th scope="col" class="num">Missing</th><th scope="col" class="num">Unique</th><th scope="col">Example</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <h4 class="sub-title" id="preview-title">Preview</h4>
+          <div class="table-wrap table-scroll" data-lenis-prevent tabindex="0" aria-labelledby="preview-title">
+            <table class="data-table preview-table" id="preview-table"><thead></thead><tbody></tbody></table>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" type="button" id="check-next">Continue</button>
+            <button class="btn btn-secondary" type="button" id="check-back">Upload a different file</button>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="goal" aria-labelledby="p-goal" hidden>
+          <h3 class="panel-title" id="p-goal" tabindex="-1">Describe the goal</h3>
+          <p class="panel-sub" id="goal-summary"></p>
+          <form id="goal-form" novalidate>
+            <div class="field">
+              <label for="purpose">What should the model do, and what matters most?</label>
+              <textarea id="purpose" name="purpose" rows="4" maxlength="500" required aria-describedby="purpose-hint purpose-error"></textarea>
+              <p class="field-hint" id="purpose-hint">Plain words. The agent uses this to pick the metric and to weigh speed against accuracy.</p>
+              <p class="field-error" id="purpose-error" role="alert"></p>
+            </div>
+            <div class="chips" role="group" aria-label="Example goals">
+              <button class="chip" type="button">Predict next month's price per product</button>
+              <button class="chip" type="button">Which customers will churn in the next 90 days</button>
+              <button class="chip" type="button">Forecast weekly demand per store</button>
+              <button class="chip" type="button">Flag fraudulent transactions</button>
+            </div>
+            <div class="field" id="goal-access-field" hidden>
+              <label for="goal-access">Access code</label>
+              <input type="password" id="goal-access" autocomplete="off" spellcheck="false" aria-describedby="goal-access-error">
+              <p class="field-error" id="goal-access-error" role="alert"></p>
+            </div>
+            <p class="form-error" id="goal-error" role="alert"></p>
+            <div class="form-actions">
+              <button class="btn btn-primary" type="submit" id="start-btn">Start the run</button>
+              <button class="btn btn-secondary" type="button" id="goal-back">Back</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel panel-wide" data-panel="run" aria-labelledby="p-run" hidden>
+          <div class="run-head">
+            <div class="run-id">
+              <h3 class="panel-title" id="p-run" tabindex="-1">Run</h3>
+              <p class="run-meta" id="run-meta"></p>
+            </div>
+            <div class="run-state">
+              <span class="status" id="run-status" role="status"></span>
+              <span class="elapsed mono" id="run-elapsed"></span>
+            </div>
+          </div>
+          <div class="replay" id="replay" hidden>
+            <button class="btn btn-secondary btn-icon" type="button" id="replay-play" aria-label="Pause"></button>
+            <fieldset class="speed">
+              <legend class="visually-hidden">Replay speed</legend>
+              <label><input type="radio" name="speed" value="1"><span>1x</span></label>
+              <label><input type="radio" name="speed" value="4" checked><span>4x</span></label>
+              <label><input type="radio" name="speed" value="16"><span>16x</span></label>
+            </fieldset>
+            <input class="scrub" type="range" id="replay-scrub" min="0" max="1" step="0.1" value="0" aria-label="Replay position">
+            <span class="replay-time mono" id="replay-time">0:00 / 0:00</span>
+          </div>
+          <div class="run-grid">
+            <aside class="notes" aria-labelledby="notes-title">
+              <h4 class="block-title" id="notes-title">Agent notes</h4>
+              <div class="notes-log" id="notes-log" role="log" aria-live="polite" aria-relevant="additions" tabindex="0" data-lenis-prevent></div>
+              <div class="activity" id="activity"><span class="activity-bar" aria-hidden="true"></span><span class="activity-text" id="activity-text"></span></div>
+            </aside>
+            <div class="run-main">
+              <section class="block" aria-labelledby="diag-title">
+                <div class="block-head"><h4 class="block-title" id="diag-title">Data checks</h4><p class="block-sub" id="diag-sub"></p></div>
+                <div id="diag"></div>
+              </section>
+              <section class="block" aria-labelledby="search-title">
+                <div class="block-head"><h4 class="block-title" id="search-title">Search funnel</h4><p class="block-sub" id="search-sub"></p></div>
+                <div class="funnel" id="funnel"></div>
+              </section>
+              <div class="block-pair">
+                <section class="block" aria-labelledby="board-title">
+                  <div class="block-head"><h4 class="block-title" id="board-title">Leaderboard</h4><p class="block-sub" id="board-sub"></p></div>
+                  <div id="board"></div>
+                </section>
+                <section class="block" aria-labelledby="usage-title">
+                  <div class="block-head"><h4 class="block-title" id="usage-title">Tokens and cost</h4></div>
+                  <div id="usage"></div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel panel-wide" data-panel="result" aria-labelledby="p-result" hidden>
+          <h3 class="panel-title" id="p-result" tabindex="-1">Results</h3>
+          <div id="result"></div>
+        </section>
+
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <span class="brand-sm">ML Factory</span>
+    <p>Open-weight models on Nebius, training on Modal, live events through Supabase. Landing numbers come from run 20260923-121753-88d3.</p>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,553 @@
+[
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158677.031722,
+  "kind": "run_start",
+  "payload": {
+   "dataset": "churn.csv",
+   "target": "Churn",
+   "rows": 3000,
+   "features": 9
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158678.770852,
+  "kind": "tool_call",
+  "payload": {
+   "tool": "diag_summary",
+   "input": {
+    "response_format": "detailed"
+   }
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158680.170852,
+  "kind": "diagnostics",
+  "payload": {
+   "findings": [
+    {
+     "check": "leakage",
+     "severity": 3,
+     "finding": "Probable leakage: refund_issued predict the target alone; drop them."
+    },
+    {
+     "check": "id_like",
+     "severity": 2,
+     "finding": "Drop id-like columns ['customer_id']."
+    },
+    {
+     "check": "missing_pattern",
+     "severity": 1,
+     "finding": "1 columns have missing values, worst last_login_days at 11%."
+    },
+    {
+     "check": "mad_outliers",
+     "severity": 1,
+     "finding": "Outliers in last_login_days, support_tickets (worst 4.3%); prefer robust scaling or trees."
+    },
+    {
+     "check": "imbalance",
+     "severity": 1,
+     "finding": "Imbalanced 3.9:1; use class_weight and roc_auc or f1_macro."
+    }
+   ],
+   "rows": {
+    "dev": 2099,
+    "search_val": 301,
+    "hidden_locked": 600
+   }
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158681.625966,
+  "kind": "thought",
+  "payload": {
+   "text": "One column, `refund_issued`, predicts churn almost perfectly by itself. Refunds are issued after a customer leaves, so I am removing it before any model trains. I also drop `customer_id` as it is a unique identifier. The target is imbalanced (3.9:1), so I will use `f1_macro` as the primary metric. No time-based drift is detected (adversarial drift AUC 0.486), so standard 5-fold CV is appropriate.\n\n"
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158681.675793,
+  "kind": "tool_call",
+  "payload": {
+   "tool": "inspect_column",
+   "input": {
+    "column": "refund_issued"
+   }
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158685.140255,
+  "kind": "thought",
+  "payload": {
+   "text": "The column `refund_issued` has a strong signal: 96.8% of customers with a refund churn, versus 0.2% without. This confirms it is a leakage column and must be dropped. I proceed to plan the search with this column and `customer_id` excluded, using `f1_macro` as the metric due to class imbalance, and standard 5-fold CV since no time drift is present.\n\n\n"
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158685.223655,
+  "kind": "tool_call",
+  "payload": {
+   "tool": "run_search",
+   "input": {
+    "rationale": "Drop leakage and ID columns, use f1_macro for imbalance, 5-fold CV.",
+    "task": "classification",
+    "primary_metric": "f1_macro",
+    "cv": "kfold",
+    "drop_columns": [
+     "refund_issued",
+     "customer_id"
+    ]
+   }
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158685.62876,
+  "kind": "status",
+  "payload": {
+   "msg": "Uploading dev split to Modal (hidden rows stay local)"
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158686.729959,
+  "kind": "search_plan",
+  "payload": {
+   "space": 3000,
+   "raced": 243,
+   "warm_start": 0,
+   "n_star": 2099,
+   "schedule": [
+    {
+     "rung": 0,
+     "n_rows": 500,
+     "keep": 81
+    },
+    {
+     "rung": 1,
+     "n_rows": 1500,
+     "keep": 27
+    },
+    {
+     "rung": 2,
+     "n_rows": 2099,
+     "keep": 3
+    }
+   ],
+   "rationale": "Drop leakage and ID columns, use f1_macro for imbalance, 5-fold CV."
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158739.821586,
+  "kind": "rung",
+  "payload": {
+   "rung": 0,
+   "n_rows": 500,
+   "evaluated": 243,
+   "survivors": 81,
+   "dropped_stat": 0,
+   "dropped_rank": 162,
+   "leader": "lgbm_s0129",
+   "leader_mean": 0.642864,
+   "tau": null
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158849.756997,
+  "kind": "rung",
+  "payload": {
+   "rung": 1,
+   "n_rows": 1500,
+   "evaluated": 81,
+   "survivors": 27,
+   "dropped_stat": 0,
+   "dropped_rank": 54,
+   "leader": "lgbm_p02",
+   "leader_mean": 0.671708,
+   "tau": 0.09814814814814815
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158897.184781,
+  "kind": "rung",
+  "payload": {
+   "rung": 2,
+   "n_rows": 2099,
+   "evaluated": 27,
+   "survivors": 6,
+   "dropped_stat": 12,
+   "dropped_rank": 9,
+   "leader": "lgbm_p02",
+   "leader_mean": 0.676624,
+   "tau": 0.1623931623931624
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158897.489703,
+  "kind": "leaderboard",
+  "payload": {
+   "round": "race",
+   "primary_metric": "f1_macro",
+   "rows": [
+    {
+     "name": "lgbm_p02",
+     "family": "lightgbm",
+     "mean": 0.6766,
+     "std": 0.0181,
+     "params": {
+      "subsample": 0.775784726514,
+      "subsample_freq": 1,
+      "extra_trees": true,
+      "colsample_bytree": 0.7732354787904,
+      "reg_alpha": 0.2211002452568,
+      "reg_lambda": 1.1318405980187,
+      "learning_rate": 0.0090151778542,
+      "min_child_samples": 4,
+      "num_leaves": 2,
+      "n_estimators": 3000
+     }
+    },
+    {
+     "name": "xgb_p00",
+     "family": "xgboost",
+     "mean": 0.6678,
+     "std": 0.0154,
+     "params": {
+      "colsample_bylevel": 0.9213705632288,
+      "colsample_bynode": 0.6443385965381,
+      "grow_policy": "lossguide",
+      "learning_rate": 0.0068171645251,
+      "max_depth": 6,
+      "max_leaves": 10,
+      "min_child_weight": 0.0507304250576,
+      "reg_alpha": 4.2446346389037,
+      "reg_lambda": 1.4800570021253,
+      "subsample": 0.9656290596647,
+      "n_estimators": 3000
+     }
+    },
+    {
+     "name": "lgbm_s0283",
+     "family": "lightgbm",
+     "mean": 0.6674,
+     "std": 0.0181,
+     "params": {
+      "learning_rate": 0.01632,
+      "num_leaves": 9,
+      "min_child_samples": 30,
+      "colsample_bytree": 0.6142,
+      "subsample": 0.5715,
+      "subsample_freq": 1,
+      "reg_lambda": 1.83,
+      "n_estimators": 1145
+     }
+    }
+   ]
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158902.10896,
+  "kind": "thought",
+  "payload": {
+   "text": "The racing phase completed in three rungs, evaluating 243 pipelines and narrowing to 6 survivors by the full sample size of 2099 rows. LightGBM leads with `lgbm_p02` at 0.6766 f1_macro, followed closely by XGBoost and another LightGBM variant. The top models are stable across rungs, with no sudden jumps or large overfitting gaps. I now proceed to confirm the top 3 with 10 paired folds and test on the hidden holdout.\n\n\n\n"
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158902.167407,
+  "kind": "tool_call",
+  "payload": {
+   "tool": "confirm_and_test",
+   "input": {
+    "k": 3
+   }
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158962.923947,
+  "kind": "confirm",
+  "payload": {
+   "primary_metric": "f1_macro",
+   "table": [
+    {
+     "name": "lgbm_p02",
+     "family": "lightgbm",
+     "cv_mean": 0.6772,
+     "ci": [
+      0.6451,
+      0.7093
+     ],
+     "p_vs_best": null,
+     "p_equiv_bayes": null,
+     "tie_group": 0,
+     "hidden": 0.6567,
+     "hidden_p_vs_best": 0.480682,
+     "ece": 0.025048,
+     "dev_to_hidden_gap": -0.0205,
+     "fit_s": 9.9,
+     "predict_ms": 4.564,
+     "big_o": {
+      "train": "O(T n p) histogram splits",
+      "predict": "O(T log L)"
+     },
+     "params": {
+      "subsample": 0.775784726514,
+      "subsample_freq": 1,
+      "extra_trees": true,
+      "colsample_bytree": 0.7732354787904,
+      "reg_alpha": 0.2211002452568,
+      "reg_lambda": 1.1318405980187,
+      "learning_rate": 0.0090151778542,
+      "min_child_samples": 4,
+      "num_leaves": 2,
+      "n_estimators": 3000
+     },
+     "pareto": true
+    },
+    {
+     "name": "xgb_p00",
+     "family": "xgboost",
+     "cv_mean": 0.6701,
+     "ci": [
+      0.6427,
+      0.6974
+     ],
+     "p_vs_best": 0.5618,
+     "p_equiv_bayes": 0.302336,
+     "tie_group": 0,
+     "hidden": 0.6657,
+     "hidden_p_vs_best": 0.387695,
+     "ece": 0.029892,
+     "dev_to_hidden_gap": -0.0044,
+     "fit_s": 46.6,
+     "predict_ms": 7.046,
+     "big_o": {
+      "train": "O(T n p) histogram splits",
+      "predict": "O(T depth)"
+     },
+     "params": {
+      "colsample_bylevel": 0.9213705632288,
+      "colsample_bynode": 0.6443385965381,
+      "grow_policy": "lossguide",
+      "learning_rate": 0.0068171645251,
+      "max_depth": 6,
+      "max_leaves": 10,
+      "min_child_weight": 0.0507304250576,
+      "reg_alpha": 4.2446346389037,
+      "reg_lambda": 1.4800570021253,
+      "subsample": 0.9656290596647,
+      "n_estimators": 3000
+     },
+     "pareto": false
+    },
+    {
+     "name": "lgbm_s0283",
+     "family": "lightgbm",
+     "cv_mean": 0.6677,
+     "ci": [
+      0.6313,
+      0.7041
+     ],
+     "p_vs_best": 0.33358,
+     "p_equiv_bayes": 0.237962,
+     "tie_group": 0,
+     "hidden": 0.6783,
+     "hidden_p_vs_best": null,
+     "ece": 0.050453,
+     "dev_to_hidden_gap": 0.0106,
+     "fit_s": 12.7,
+     "predict_ms": 9.361,
+     "big_o": {
+      "train": "O(T n p) histogram splits",
+      "predict": "O(T log L)"
+     },
+     "params": {
+      "learning_rate": 0.01632,
+      "num_leaves": 9,
+      "min_child_samples": 30,
+      "colsample_bytree": 0.6142,
+      "subsample": 0.5715,
+      "subsample_freq": 1,
+      "reg_lambda": 1.83,
+      "n_estimators": 1145
+     },
+     "pareto": false
+    }
+   ],
+   "recommendation": {
+    "pick": "lgbm_p02",
+    "best": "lgbm_p02",
+    "threshold": 0.668403,
+    "within_1se": [
+     "lgbm_p02",
+     "xgb_p00"
+    ]
+   },
+   "tie_groups": [
+    [
+     "lgbm_p02",
+     "xgb_p00",
+     "lgbm_s0283"
+    ]
+   ],
+   "notes": "p_vs_best: Nadeau-Bengio corrected t on 10 paired folds; hidden: one-shot holdout."
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158970.59295,
+  "kind": "thought",
+  "payload": {
+   "text": "The top three models are statistically tied (Holm-adjusted p > 0.05), with overlapping confidence intervals. The 1-SE rule selects `lgbm_p02` as the best within one standard error of the top performer. It has the highest CV mean (0.6772) and is on the Pareto front for speed and accuracy. The hidden test shows a slight drop from CV (\u22120.0205), but remains robust. I finalize this model.\n\n\n\n"
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158970.748768,
+  "kind": "tool_call",
+  "payload": {
+   "tool": "finalize_model",
+   "input": {
+    "candidate_name": "lgbm_p02"
+   }
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158970.854476,
+  "kind": "status",
+  "payload": {
+   "msg": "Training final model 'lgbm_p02' on all data"
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158982.469665,
+  "kind": "final_model",
+  "payload": {
+   "name": "lgbm_p02",
+   "spec": {
+    "dataset_path": "/datasets/ac59fea41431.parquet",
+    "target": "Churn",
+    "task": "classification",
+    "cv": "kfold",
+    "cv_folds": 5,
+    "time_column": null,
+    "drop_columns": [
+     "refund_issued",
+     "customer_id"
+    ],
+    "name": "lgbm_p02",
+    "model": "lightgbm",
+    "params": {
+     "subsample": 0.775784726514,
+     "subsample_freq": 1,
+     "extra_trees": true,
+     "colsample_bytree": 0.7732354787904,
+     "reg_alpha": 0.2211002452568,
+     "reg_lambda": 1.1318405980187,
+     "learning_rate": 0.0090151778542,
+     "min_child_samples": 4,
+     "num_leaves": 2,
+     "n_estimators": 3000
+    },
+    "preprocessing": {
+     "categorical": "ordinal"
+    }
+   },
+   "model_path": "/models/20260923-121753-88d3/lgbm_p02.joblib",
+   "n_rows": 2099,
+   "top_features": [
+    {
+     "feature": "num__tenure_months",
+     "importance": 735.0
+    },
+    {
+     "feature": "num__monthly_charges",
+     "importance": 732.0
+    },
+    {
+     "feature": "num__support_tickets",
+     "importance": 609.0
+    },
+    {
+     "feature": "cat__contract",
+     "importance": 498.0
+    },
+    {
+     "feature": "cat__payment_method",
+     "importance": 170.0
+    },
+    {
+     "feature": "num__has_streaming",
+     "importance": 152.0
+    },
+    {
+     "feature": "num__last_login_days",
+     "importance": 104.0
+    }
+   ]
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158982.563827,
+  "kind": "export",
+  "payload": {
+   "script": "runs/20260923-121753-88d3_export/train_lgbm_p02.py",
+   "params": "runs/20260923-121753-88d3_export/params.json",
+   "card": "runs/20260923-121753-88d3_export/MODEL_CARD.md"
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158998.4477649,
+  "kind": "thought",
+  "payload": {
+   "text": "The model has been trained and saved. Top features are tenure in months, monthly charges, number of support tickets, contract type, payment method, streaming subscription, and days since last login. These align with business intuition: longer-tenured, lower-charging customers with fewer support issues are less likely to churn. I now generate the final report.\n\n\n\n\n"
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158998.617225,
+  "kind": "tool_call",
+  "payload": {
+   "tool": "write_report",
+   "input": {
+    "markdown": "# ML Factory Report\n\n## 1. Dataset card\n- Rows: 2099\n- Features: 10\n- Target: Churn\n- Task: classification\n- Purpose: flag likely churners early; explainable is a plus\n\n## 2. Issues and fixes\n- `refund_issued`: leakage (predicts target almost perfectly), dropped\n- `customer_id`: identifier, dropped\n- Target imbalance (3.9:1), addressed via f1_macro metric\n\n## 3. Search funnel\n- 3000 configs generated\n- 243 raced\n- 3 confirmed\n- 1 recommended\n\n## 4. Top-k table\n| model | key params | f1_macro \u00b1 CI | p vs best | fit s | predict ms | Big-O | Pareto |\n|---|---|---|---|---|---|---|---|\n| lgbm_p02 | extra_trees=True, lr=0.009, n_estimators=3000 | 0.6772 \u00b1 [0.6451, 0.7093] | \u2014 | 9.9 | 4.564 | O(T n p) / O(T log L) | yes |\n| xgb_p00 | grow_policy=lossguide, lr=0.0068, max_depth=6 | 0.6701 \u00b1 [0.6427, 0.6974] | 0.5618 | 46.6 | 7.046 | O(T n p) / O(T depth) | no |\n| lgbm_s0283 | lr=0.016, n_estimators=1145, num_leaves=9 | 0.6677 \u00b1 [0.6313, 0.7041] | 0.33358 | 12.7 | 9.361 | O(T n p) / O(T log L) | no |\n\n## 5. Recommendation and why\nRecommend `lgbm_p02` (LightGBM). It is the simplest and fastest model within one standard error of the best (1-SE rule), with strong performance (f1_macro 0.6772) and low prediction latency (4.6 ms). Though XGBoost is tied, LightGBM is faster to train and predict.\n\n## 6. n* justification\nn* = 2099 of 2099 dev rows because Hoeffding with eps = 0.02, delta = 0.05 and 243 configs needs 11478 rows (capped at the dev size).\n\n## 7. External data\n- Not run\n\n## 8. Caveats\n- Hidden test score dropped by 0.0205 from CV, suggesting slight overfitting.\n- `refund_issued` was a strong leakage signal; ensure no similar post-event data is used in production.\n- Model interpretability is moderate: LightGBM feature importances are available, but not as transparent as logistic regression.\n\n## 9. How the user retrains it\n```bash\npython train_lgbm_p02.py --data churn.csv --target Churn\n```\nScript and model card at: `runs/20260923-121753-88d3_export/`\n\n## 10. Tokens spent\n- Not available in this simulation\n\n## 11. spoken_summary\nBest model: LightGBM, f1_macro 0.677. Fast, stable, and explains key churn drivers like tenure and support tickets.",
+    "spoken_summary": "Best model: LightGBM, f1_macro 0.677. Fast, stable, and explains key churn drivers like tenure and support tickets."
+   }
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158998.703764,
+  "kind": "report",
+  "payload": {
+   "markdown": "# ML Factory Report\n\n## 1. Dataset card\n- Rows: 2099\n- Features: 10\n- Target: Churn\n- Task: classification\n- Purpose: flag likely churners early; explainable is a plus\n\n## 2. Issues and fixes\n- `refund_issued`: leakage (predicts target almost perfectly), dropped\n- `customer_id`: identifier, dropped\n- Target imbalance (3.9:1), addressed via f1_macro metric\n\n## 3. Search funnel\n- 3000 configs generated\n- 243 raced\n- 3 confirmed\n- 1 recommended\n\n## 4. Top-k table\n| model | key params | f1_macro \u00b1 CI | p vs best | fit s | predict ms | Big-O | Pareto |\n|---|---|---|---|---|---|---|---|\n| lgbm_p02 | extra_trees=True, lr=0.009, n_estimators=3000 | 0.6772 \u00b1 [0.6451, 0.7093] | \u2014 | 9.9 | 4.564 | O(T n p) / O(T log L) | yes |\n| xgb_p00 | grow_policy=lossguide, lr=0.0068, max_depth=6 | 0.6701 \u00b1 [0.6427, 0.6974] | 0.5618 | 46.6 | 7.046 | O(T n p) / O(T depth) | no |\n| lgbm_s0283 | lr=0.016, n_estimators=1145, num_leaves=9 | 0.6677 \u00b1 [0.6313, 0.7041] | 0.33358 | 12.7 | 9.361 | O(T n p) / O(T log L) | no |\n\n## 5. Recommendation and why\nRecommend `lgbm_p02` (LightGBM). It is the simplest and fastest model within one standard error of the best (1-SE rule), with strong performance (f1_macro 0.6772) and low prediction latency (4.6 ms). Though XGBoost is tied, LightGBM is faster to train and predict.\n\n## 6. n* justification\nn* = 2099 of 2099 dev rows because Hoeffding with eps = 0.02, delta = 0.05 and 243 configs needs 11478 rows (capped at the dev size).\n\n## 7. External data\n- Not run\n\n## 8. Caveats\n- Hidden test score dropped by 0.0205 from CV, suggesting slight overfitting.\n- `refund_issued` was a strong leakage signal; ensure no similar post-event data is used in production.\n- Model interpretability is moderate: LightGBM feature importances are available, but not as transparent as logistic regression.\n\n## 9. How the user retrains it\n```bash\npython train_lgbm_p02.py --data churn.csv --target Churn\n```\nScript and model card at: `runs/20260923-121753-88d3_export/`\n\n## 10. Tokens spent\n- Not available in this simulation\n\n## 11. spoken_summary\nBest model: LightGBM, f1_macro 0.677. Fast, stable, and explains key churn drivers like tenure and support tickets.",
+   "spoken_summary": "Best model: LightGBM, f1_macro 0.677. Fast, stable, and explains key churn drivers like tenure and support tickets."
+  }
+ },
+ {
+  "run_id": "20260923-121753-88d3",
+  "ts": 1790158998.752836,
+  "kind": "usage",
+  "payload": {
+   "calls": 6,
+   "input_tokens": 30199,
+   "output_tokens": 1531,
+   "usd": 0.006958
+  }
+ }
+]
