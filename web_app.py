@@ -403,10 +403,10 @@ def create_app(spawn, status_store, storage_root: str, *, commit=None, refresh=N
 # ------------------------------------------------------------------ Modal wiring
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SOURCES = ("agent", "factory_tools", "providers", "supabase_sync", "modal_train", "diagnostics", "sampling",
-           "search_space", "racing", "stats_tests", "memory", "export", "external_data", "purpose", "report",
-           "ensemble", "forecasting", "usecases")
-SOURCES = tuple(m for m in SOURCES if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{m}.py")))
+# Every top-level module except tests and this file ships in the image, so a new module can never be left out
+# (a hand-kept list once dropped ensemble.py and crashed the first cloud run on import).
+SOURCES = tuple(sorted(f[:-3] for f in os.listdir(HERE)
+                       if f.endswith(".py") and not f.startswith("test_") and f != "web_app.py"))
 RUNS_DIR = f"{DATA_DIR}/runs"
 WEB_DIR = "/root/web"
 

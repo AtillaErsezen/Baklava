@@ -24,6 +24,7 @@ import stats_tests as st
 import usecases as uc
 from export import export_bundle
 from modal_train import GPU_ENABLED, check_name, check_params, upload_dataset
+from results_store import candidate_row
 
 HIGHER_IS_BETTER = {"roc_auc": True, "f1_macro": True, "accuracy": True, "r2": True, "rmse": False, "mae": False}
 TASK_METRICS = {"classification": ("roc_auc", "f1_macro", "accuracy"), "regression": ("rmse", "mae", "r2")}
@@ -239,14 +240,12 @@ class PipelineTools:
         if man and cv in ("walk_forward", "purged"):
             base["gap"] = int(man.get("cv_gap_rows") or 0)
         by_name = {c["name"]: c for c in configs}
-
         rung_of = {r["n_rows"]: r["rung"] for r in schedule}
-        self.sync.update(primary_metric=pm)
 
         def evaluate(cfgs, n_rows):
             res = self._map([self._spec(base, c, n_rows) for c in cfgs])
-            self.sync.candidates([self._candidate_row(r, by_name, pm, "race", rung=rung_of.get(n_rows), rows=n_rows)
-                                  for r in res])
+            self.store.add_candidates([candidate_row(self.run_id, "race", by_name.get(r.get("name"), {}), r, pm,
+                                                     rung=rung_of.get(n_rows), train_rows=n_rows) for r in res])
             return [{"name": r["name"], "ok": True, "folds": r["metrics"][pm]["folds"], "fit_seconds": r["fit_seconds"]}
                     if r.get("ok") else {"name": r.get("name"), "ok": False} for r in res]
 
@@ -308,15 +307,14 @@ class PipelineTools:
                           "fit_s": r["fit_s"], "predict_ms": r["predict_ms"],
                           "big_o": {k: ss.COMPLEXITY.get(r["family"], {}).get(k) for k in ("train", "predict")},
                           "params": self.search["by_name"][r["name"]].get("params")})
-        self.sync.candidates([self._candidate_row(res[t["name"]], self.search["by_name"], pm, "confirm", rows=n,
-                                                  p_vs_best=t["p_vs_best"], tie_with_best=t["tie_group"] == 0)
-                              for t in table] +
-                             [{"name": t["name"], "family": t["family"], "stage": "hidden", "ok": True,
-                               "hidden_score": t["hidden"], "params": t["params"]} for t in table if t["hidden"] is not None])
         front = _pareto(table, sign)
         for t in table:
             t["pareto"] = t["name"] in front
         table.sort(key=lambda t: -sign * t["cv_mean"])
+        self.store.add_candidates([candidate_row(
+            self.run_id, "confirm", self.search["by_name"][t["name"]], res[t["name"]], pm, train_rows=n,
+            p_vs_best=t["p_vs_best"], tie_with_best=t["tie_group"] == table[0]["tie_group"], hidden_score=t["hidden"],
+            hidden_p_vs_best=t["hidden_p_vs_best"], ece=t["ece"]) for t in table])
         self.confirmed = {"pm": pm, "rows": {t["name"]: t for t in table}, "pick": pick}
         out = {"primary_metric": pm, "table": table, "recommendation": pick, "tie_groups": groups,
                "ensemble": self._ensemble([self.specs[r["name"]] for r in rows], pm, task, best["name"]),
@@ -363,16 +361,6 @@ class PipelineTools:
                     err = lambda y, q: -float(np.mean(np.abs(np.asarray(y) - np.asarray(q))))
                     out[k]["p_vs_best"] = st.paired_bootstrap(err, b["y_true"], b["pred"], p["pred"])["p"]
         return out
-
-    def _candidate_row(self, r: dict, by_name: dict, pm: str, stage: str, rows=None, **extra) -> dict:
-        """One evaluation as a candidates-table row (Supabase v2)."""
-        c = by_name.get(r.get("name"), {})
-        m = (r.get("metrics") or {}).get(pm, {})
-        return {"name": r.get("name"), "family": c.get("family", c.get("model", "unknown")), "stage": stage,
-                "train_rows": rows, "params": c.get("params") or {}, "preprocessing": c.get("preprocessing") or {},
-                "ok": bool(r.get("ok")), "error": (r.get("error") or "")[:300] or None, "cv_mean": m.get("mean"),
-                "cv_std": m.get("std"), "train_mean": m.get("train_mean"), "metrics": {pm: m.get("folds")},
-                "fit_seconds": r.get("fit_seconds"), "predict_ms": r.get("predict_ms"), **extra}
 
     def _ensemble(self, specs: list[dict], pm: str, task: str, best: str) -> dict | None:
         """Caruana weights on the untouched search_val split, then one comparison on hidden."""

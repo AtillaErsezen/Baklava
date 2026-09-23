@@ -264,7 +264,7 @@ scroll-pinned pipeline explainer, animated funnel, FLIP leaderboard. Style and m
 
 ## Supabase
 Emre's v2 schema (runs keyed by run_id; candidates per rung / confirm / hidden; events; RLS read-only for anon) is
-supported by `supabase_sync.py`, which detects v1 vs v2 from the PostgREST OpenAPI description at start.
+written by `results_store.py` (runs + candidates, NaN-safe, best effort). `docs/supabase.sql` is Emre's final schema.
 
 ## Testing on public data
 `evals/public_catalog.py` + `evals/fetch_public.py`: classic Kaggle datasets from public mirrors on the allowlisted
