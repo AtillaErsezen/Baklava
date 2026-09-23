@@ -217,12 +217,13 @@ def choose_n(n_dev: int, k_configs: int, eps: float = 0.02, delta: float = 0.05,
     n_knee = knee_n(*curve[:3], eps, n_dev) if curve is not None else None
     n_star = min(n_dev, max(n_eval, n_knee or 0))
     why = (f"Use n_star = {n_star} of {n_dev} dev rows because Hoeffding with eps = {eps}, delta = {delta} "
-           f"and {k_configs} configs needs {n_hoef} rows")
+           f"and {k_configs} configs suggests about {n_hoef} rows as a rough guide "
+           "(CV estimates are correlated, so this is approximate)")
     if n_prec is not None:
         why += f", a CI half width of {eps} at sigma = {pilot_sigma} needs {n_prec}"
     if n_knee is not None:
         why += f", and the fitted learning curve gains under {eps} per doubling from n = {n_knee}"
-    why += " (capped at the dev size)." if n_star == n_dev and n_dev < max(n_eval, n_knee or 0) else "."
+    why += ", capped at the dev size." if n_star == n_dev and n_dev < max(n_eval, n_knee or 0) else "."
     return {"n_star": n_star, "n_eval": n_eval, "n_knee": n_knee, "justification": why}
 
 

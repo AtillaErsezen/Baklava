@@ -108,6 +108,15 @@ def test_choose_n():
     assert "\u2014" not in out["justification"] and "\u2013" not in out["justification"]
 
 
+def test_choose_n_hoeffding_is_a_rough_guide():
+    why = s.choose_n(2099, 243)["justification"]
+    assert s.hoeffding_n(0.02, 0.05, 243) == 11478
+    assert why.startswith("Use n_star = 2099 of 2099 dev rows because Hoeffding with eps = 0.02, delta = 0.05 "
+                          "and 243 configs suggests about 11478 rows as a rough guide (CV estimates are correlated, "
+                          "so this is approximate)"), why
+    assert "configs needs" not in why and "capped at the dev size" in why
+
+
 def test_draw_verified():
     df = _clf_df(6000)
     out = s.draw_verified(df, "y", "classification", 1500)

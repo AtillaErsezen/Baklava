@@ -100,6 +100,16 @@ def test_report_numbers_come_from_state():
     assert "Features: 10" not in md
 
 
+def test_report_retrain_command_matches_script_cli_and_notes_refit():
+    md = build_report(live_state(), PROSE)["markdown"]
+    retrain = md.split("## How to retrain")[1]
+    assert ("    python runs/r1_export/train_lgbm_p02.py data.csv --target Churn [--out model.joblib] [--cv K]"
+            in retrain)
+    assert "--data" not in md
+    assert ("The delivered model was refit on all rows (dev + search validation + hidden) after the evaluation"
+            in retrain and "slightly conservative proxy" in retrain)
+
+
 def test_report_tie_note_and_auto_caveats():
     md = build_report(live_state(), PROSE)["markdown"]
     assert "statistically tied with xgb_p00, lgbm_s0283; chosen by the 1-SE rule" in md

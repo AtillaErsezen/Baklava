@@ -220,8 +220,13 @@ def build_report(state: dict, prose: dict) -> dict:
     md += ["## Caveats", "", *(cav or ["- None recorded."]), ""]
     if (state.get("export") or {}).get("script"):
         ex = state["export"]
-        md += ["## How to retrain", "", f"    python {_line(ex['script'])} data.csv --target {_line(ds.get('target', 'TARGET'))}",
-               "", f"Params: {_line(ex.get('params', 'n/a'))}. Model card: {_line(ex.get('card', 'n/a'))}.", ""]
+        md += ["## How to retrain", "", f"    python {_line(ex['script'])} data.csv --target {_line(ds.get('target', 'TARGET'))}"
+               " [--out model.joblib] [--cv K]", "", "data.csv is your CSV or Parquet file; --out defaults to model.joblib; "
+               "--cv K sets the CV folds (default: the agent's). The script prints the CV score, then fits on all rows.",
+               "", f"Params: {_line(ex.get('params', 'n/a'))}. Model card: {_line(ex.get('card', 'n/a'))}.", "",
+               "The delivered model was refit on all rows (dev + search validation + hidden) after the evaluation, so the "
+               "hidden score measured the same pipeline trained on the dev split: a close, slightly conservative proxy for "
+               "the delivered model, not a held-out estimate of that exact fit.", ""]
     if state.get("usage"):
         u = state["usage"]
         modal = f" Modal compute: ${_n(u['modal_usd'])}." if u.get("modal_usd") is not None else ""

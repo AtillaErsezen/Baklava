@@ -54,6 +54,7 @@ TARGET = $target_r
 DROP_COLUMNS = $drop_r
 TIME_COLUMN = $time_r
 CV_MODE = $cv_mode_r
+GAP = $gap
 PRIMARY_METRIC = $metric_r
 PARAMS = $params_r
 SPEC = $spec_r
@@ -140,9 +141,10 @@ def load_xy(path: str, target: str) -> tuple:
 
 
 def splitter(k: int):
-    """Same CV scheme the agent used to score this candidate."""
-    if CV_MODE == "timeseries":
-        return TimeSeriesSplit(n_splits=k)
+    """Same CV scheme the agent used to score this candidate (load_xy sorts rows by TIME_COLUMN)."""
+    if CV_MODE in ("walk_forward", "timeseries", "purged"):
+        # "purged" approximates the agent's purged k-fold: forward only, GAP rows between train and test
+        return TimeSeriesSplit(n_splits=k, gap=GAP)
     if TASK == "classification":
         return StratifiedKFold(k, shuffle=True, random_state=SEED)
     return KFold(k, shuffle=True, random_state=SEED)
@@ -217,7 +219,7 @@ def render_train_script(spec: dict, purpose: str | None = None) -> str:
         params_doc="\n".join(_doc(f"    {k} = {v!r}") for k, v in sorted(params.items())),
         task_r=repr(spec["task"]), target_r=repr(spec["target"]),
         drop_r=repr(list(spec.get("drop_columns") or [])),
-        time_r=repr(spec.get("time_column")), cv_mode_r=repr(spec.get("cv")),
+        time_r=repr(spec.get("time_column")), cv_mode_r=repr(spec.get("cv")), gap=int(spec.get("gap") or 0),
         metric_r=repr(_metric(spec)), params_r=repr(params),
         spec_r=pprint.pformat(spec, indent=4, width=70),
         num_impute_r=repr(prep.get("numeric_impute", "median")),
@@ -276,7 +278,10 @@ def render_model_card(spec: dict, metrics: dict, purpose: str | None,
         if "ci_low" in metrics and "ci_high" in metrics:
             line += f" (CI {_fmt(metrics['ci_low'])} to {_fmt(metrics['ci_high'])})"
         out += [line, ""]
-    out += [*_table(_flatten(metrics), ("metric", "value")), ""]
+    out += [*_table(_flatten(metrics), ("metric", "value")), "",
+            "Evaluation note: the delivered model was refit on all rows (dev + search validation + hidden) "
+            "after evaluation, so the hidden score measured the same pipeline trained on the dev split: a close, "
+            "slightly conservative proxy for this model, not a held-out estimate of this exact fit.", ""]
     if "calibration" in extra:
         cal = extra["calibration"]
         out += ["## Calibration", "", *(_table(_flatten(cal), ("stat", "value"))

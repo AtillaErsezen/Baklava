@@ -90,6 +90,33 @@ def test_ridge_script_runs() -> None:
         assert os.path.exists(out)
 
 
+def _script_ns(spec: dict) -> dict:
+    """Exec the generated script as an imported module (main() not run); return its namespace."""
+    ns = {"__name__": "train_script"}
+    exec(compile(render_train_script(spec), "train.py", "exec"), ns)
+    return ns
+
+
+def test_script_reproduces_agent_cv() -> None:
+    import pandas as pd
+    from sklearn.model_selection import KFold, StratifiedKFold, TimeSeriesSplit
+
+    for cv in ("walk_forward", "purged"):
+        ns = _script_ns({**RIDGE_SPEC, "cv": cv, "gap": 3, "time_column": "date"})
+        sp = ns["splitter"](4)
+        assert isinstance(sp, TimeSeriesSplit) and sp.gap == 3 and sp.n_splits == 4, cv
+        assert ns["GAP"] == 3, cv
+    ts = _script_ns({**RIDGE_SPEC, "cv": "timeseries"})["splitter"](3)
+    assert isinstance(ts, TimeSeriesSplit) and ts.gap == 0
+    assert type(_script_ns({**RIDGE_SPEC, "cv": "kfold"})["splitter"](3)) is KFold
+    assert type(_script_ns({**CHURN_SPEC, "cv": "kfold"})["splitter"](3)) is StratifiedKFold
+    with tempfile.TemporaryDirectory() as tmp:  # rows sorted by TIME_COLUMN before CV
+        path = os.path.join(tmp, "d.csv")
+        pd.DataFrame({"date": [3, 1, 2], "x": [30, 10, 20], "SalePrice": [3.0, 1.0, 2.0]}).to_csv(path, index=False)
+        _, y, _ = _script_ns({**RIDGE_SPEC, "cv": "walk_forward", "time_column": "date"})["load_xy"](path, "SalePrice")
+        assert list(y) == [1.0, 2.0, 3.0]
+
+
 def test_model_card() -> None:
     metrics = {"cv_mean": 0.84, "cv_std": 0.01, "ci_low": 0.82, "ci_high": 0.86,
                "hidden_score": 0.83}
@@ -101,6 +128,8 @@ def test_model_card() -> None:
     for s in ("LogisticRegression", "| C | 0.5 |", "max_iter", "0.84", "0.35",
               "O(n d)", "small sample", "brier", "retrain", "drift", "leakage"):
         assert s.lower() in card.lower(), s
+    assert "Evaluation note: the delivered model was refit on all rows (dev + search validation + hidden)" in card
+    assert "slightly conservative proxy" in card
 
 
 def test_export_bundle_writes_three_files() -> None:
