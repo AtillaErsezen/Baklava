@@ -283,6 +283,16 @@ def render_model_card(spec: dict, metrics: dict, purpose: str | None,
             f"    python train_{name}.py data.csv --target {spec['target']} "
             f"--out model.joblib --cv {int(spec.get('cv_folds', 5))}", "",
             "The script prints the cross-validated metric, then fits on all rows.", "",
+            "## How to predict", "",
+            "`model.joblib` is the fitted pipeline. Keep it next to the training script, which holds "
+            "the same cleaning steps, and install the libraries the script lists:", "",
+            "    import joblib",
+            f"    from train_{name} import TARGET, DROP_COLUMNS, clean, load",
+            "    bundle = joblib.load('model.joblib')",
+            "    X = clean(load('new.csv').drop(columns=[TARGET, *DROP_COLUMNS], errors='ignore'))",
+            "    pred = bundle['pipeline'].predict(X)",
+            "    if bundle['classes']:",
+            "        pred = [bundle['classes'][i] for i in pred]", "",
             "## Checks to rerun on new data", "",
             "- Drift: compare feature distributions and the target rate against the "
             "training data (e.g. PSI or KS per column).",

@@ -7,6 +7,9 @@ Harness tools for FactoryRun: the math decides, the LLM judges.
   data_search / data_try    Tavily search, then a measured enrich trial (never a claimed gain)
 Mixed into agent.FactoryRun; relies on self.df, self.target, self.emit, self.fns, self.specs.
 """
+import os
+import shutil
+
 import numpy as np
 from sklearn.metrics import (accuracy_score, f1_score, mean_absolute_error, mean_squared_error, r2_score,
                              roc_auc_score)
@@ -19,7 +22,7 @@ import sampling
 import search_space as ss
 import stats_tests as st
 from export import export_bundle
-from modal_train import GPU_ENABLED, check_name, check_params, upload_dataset
+from modal_train import GPU_ENABLED, check_name, check_params, download_file, upload_dataset
 from results_store import candidate_row
 
 HIGHER_IS_BETTER = {"roc_auc": True, "f1_macro": True, "accuracy": True, "r2": True, "rmse": False, "mae": False}
@@ -287,13 +290,20 @@ class PipelineTools:
 
     # ---- export + memory
     def export_user_model(self, name: str) -> dict:
-        """Standalone train script + params + model card the end user keeps."""
+        """Fitted model + standalone train script + params + model card the end user keeps,
+        also zipped as runs/<run_id>_model.zip."""
         row = (self.confirmed or {}).get("rows", {}).get(name, {})
         metrics = {k: row.get(k) for k in ("cv_mean", "ci", "hidden", "p_vs_best", "ece") if row.get(k) is not None}
         spec = {**self.specs[name], "primary_metric": (self.search or {}).get("pm")}
         extra = {"complexity": row.get("big_o")} if row.get("big_o") else None
-        self.export = export_bundle(spec, metrics, f"runs/{self.run_id}_export", purpose=self.purpose,
+        out_dir = f"runs/{self.run_id}_export"
+        self.export = export_bundle(spec, metrics, out_dir, purpose=self.purpose,
                                     caveats=[f["finding"] for f in self.diag["findings"][:5]], extra=extra)
+        try:
+            self.export["model"] = download_file((self.final or {})["model_path"], os.path.join(out_dir, "model.joblib"))
+            self.export["zip"] = shutil.make_archive(f"runs/{self.run_id}_model", "zip", out_dir)
+        except Exception as e:  # the model stays on the Modal volume; the run still finishes
+            self.export["model_error"] = str(e)[:300]
         self.emit("export", self.export)
         return self.export
 

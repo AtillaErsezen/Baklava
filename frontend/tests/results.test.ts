@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { parseRun, rankModels, reportMarkdown } from "../src/results/data.ts";
 import { localRuns } from "../server/runs.ts";
 const event = (kind: string, payload: Record<string, unknown>, ts = 1) => ({
@@ -231,6 +232,42 @@ test("local API only serves allowed result files and rejects symlinks, writes, a
       413,
     );
     assert.equal((await request("/api/results", "POST")).statusCode, 405);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("local API flags and serves only runs with a saved model zip", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "baklava-models-"));
+  try {
+    await writeFile(join(dir, "a_events.jsonl"), "");
+    await writeFile(join(dir, "b_events.jsonl"), "");
+    await writeFile(join(dir, "a_model.zip"), "zip");
+    let middleware: any;
+    (localRuns(dir).configureServer as Function)({
+      middlewares: { use: (fn: unknown) => (middleware = fn) },
+    });
+    const request = (url: string) =>
+      new Promise<{ status: number; body: string }>((done) => {
+        const res = Object.assign(new PassThrough(), {
+          statusCode: 200,
+          setHeader() {},
+        });
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("finish", () => done({ status: res.statusCode, body }));
+        void middleware({ url, method: "GET" }, res, () => {});
+      });
+    const index = JSON.parse((await request("/api/results")).body);
+    assert.deepEqual(
+      index.map((r: any) => [r.id, r.model]),
+      [
+        ["b", false],
+        ["a", true],
+      ],
+    );
+    assert.equal((await request("/api/results/a/model")).body, "zip");
+    assert.equal((await request("/api/results/b/model")).status, 404);
+    assert.equal((await request("/api/results/..%2fa/model")).status, 404);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

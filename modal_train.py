@@ -165,6 +165,13 @@ def upload_frame(df, name: str) -> str:
     return remote
 
 
+def download_file(remote: str, local: str) -> str:
+    """Copy a file from the Modal volume (e.g. a fitted model) to a local path."""
+    with open(local, "wb") as f:
+        vol.read_file_into_fileobj(remote, f)
+    return local
+
+
 # ------------------------------------------------------------------ remote side (Modal containers)
 
 def _clean(X):

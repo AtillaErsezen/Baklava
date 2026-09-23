@@ -1,3 +1,4 @@
+import { createReadStream } from "node:fs";
 import { readdir, readFile, lstat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Plugin, Connect } from "vite";
@@ -15,12 +16,13 @@ export function localRuns(directory: string): Plugin {
       return;
     }
     try {
-      const files = (
-        await readdir(directory).catch((error: NodeJS.ErrnoException) => {
+      const all: string[] = await readdir(directory).catch(
+        (error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return [];
           throw error;
-        })
-      ).filter((name) =>
+        },
+      );
+      const files = all.filter((name) =>
         /^[a-zA-Z0-9_-]+_(events\.jsonl|results\.json)$/.test(name),
       );
       if (url.pathname === "/api/results") {
@@ -32,9 +34,37 @@ export function localRuns(directory: string): Plugin {
         }
         res.end(
           JSON.stringify(
-            [...runs].map(([id, file]) => ({ id, file })).reverse(),
+            [...runs]
+              .map(([id, file]) => ({
+                id,
+                file,
+                model: all.includes(`${id}_model.zip`),
+              }))
+              .reverse(),
           ),
         );
+        return;
+      }
+      // Fitted model + retrain script + model card, zipped by the Python export step.
+      const model = /^\/api\/results\/([a-zA-Z0-9_-]+)\/model$/.exec(
+        url.pathname,
+      )?.[1];
+      if (model) {
+        const file = `${model}_model.zip`;
+        if (
+          !all.includes(file) ||
+          !(await lstat(resolve(directory, file))).isFile()
+        ) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ error: "No model was saved for this run" }));
+          return;
+        }
+        res.setHeader("Content-Type", "application/zip");
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="baklava-${file}"`,
+        );
+        createReadStream(resolve(directory, file)).pipe(res);
         return;
       }
       const file = decodeURIComponent(

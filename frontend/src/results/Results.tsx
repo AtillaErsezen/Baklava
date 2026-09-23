@@ -363,7 +363,7 @@ function ScoreChart({ run }: { run: Run }) {
     </div>
   );
 }
-function Report({ run }: { run: Run }) {
+function Report({ run, modelUrl }: { run: Run; modelUrl?: string }) {
   // Render report text as React nodes. Imported HTML is never executed.
   const lines = run.report.split(/\r?\n/);
   return (
@@ -398,8 +398,17 @@ function Report({ run }: { run: Run }) {
           <div>
             <span className="r-label">SAVED MODEL</span>
             <code>{run.modelPath}</code>
-            <p>Model artifacts remain in the training environment.</p>
+            <p>
+              {modelUrl
+                ? "A zip with the fitted scikit-learn pipeline (model.joblib), its retraining script, and a model card explaining how to predict."
+                : "Model artifacts remain in the training environment."}
+            </p>
           </div>
+          {modelUrl && (
+            <a className="r-button r-button-primary" href={modelUrl} download>
+              <ArrowDownToLine size={15} /> Download model
+            </a>
+          )}
         </div>
       )}
     </section>
@@ -422,7 +431,9 @@ export default function Results({ training = false }: { training?: boolean }) {
   const [runs, setRuns] = useState<Run[]>(samples),
     [selected, setSelected] = useState(samples[0].id);
   const [view, setView] = useState<View>("Overview"),
-    [localFiles, setLocalFiles] = useState<{ id: string; file: string }[]>([]);
+    [localFiles, setLocalFiles] = useState<
+      { id: string; file: string; model?: boolean }[]
+    >([]);
   const [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [loading, setLoading] = useState(false),
@@ -431,9 +442,11 @@ export default function Results({ training = false }: { training?: boolean }) {
     request = useRef(0);
   const run = runs.find((r) => r.id === selected) ?? samples[0];
   const winner = run.models.find((m) => m.name === run.winner);
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/results", { signal: controller.signal })
+  const modelUrl = localFiles.some((f) => f.id === run.id && f.model)
+    ? `/api/results/${encodeURIComponent(run.id)}/model`
+    : undefined;
+  const refreshFiles = (signal?: AbortSignal) =>
+    fetch("/api/results", { signal })
       .then((r) => (r.ok ? r.json() : []))
       .then((data) => {
         if (Array.isArray(data))
@@ -444,6 +457,9 @@ export default function Results({ training = false }: { training?: boolean }) {
           );
       })
       .catch(() => {});
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshFiles(controller.signal);
     return () => controller.abort();
   }, []);
   const selectRun = (id: string) => {
@@ -525,11 +541,7 @@ export default function Results({ training = false }: { training?: boolean }) {
     request.current++;
     addRun(parseRun(data.content, file));
     setNotice("Your training results are ready.");
-    setLocalFiles((current) =>
-      current.some((f) => f.file === file)
-        ? current
-        : [{ id: file.replace(/_events\.jsonl$/, ""), file }, ...current],
-    );
+    void refreshFiles();
     window.location.assign("#results");
     window.scrollTo(0, 0);
   }
@@ -773,6 +785,11 @@ export default function Results({ training = false }: { training?: boolean }) {
                   )}{" "}
                   {trainingLabel}
                 </a>
+                {modelUrl && (
+                  <a className="r-button t-secondary" href={modelUrl} download>
+                    <ArrowDownToLine size={15} /> Download model
+                  </a>
+                )}
                 <button
                   className="r-button r-button-primary"
                   onClick={exportReport}
@@ -1108,7 +1125,7 @@ export default function Results({ training = false }: { training?: boolean }) {
                   </aside>
                 </div>
               )}
-              {view === "Report" && <Report run={run} />}
+              {view === "Report" && <Report run={run} modelUrl={modelUrl} />}
               {view === "Activity" && (
                 <div className="r-activity-grid">
                   <section className="r-panel">

@@ -1121,6 +1121,13 @@
   margin: 20px 22px 0;
   border-radius: 4px;
   color: #abc48e;
+  flex-wrap: wrap;
+}
+.r-artifact > div {
+  flex: 1 1 220px;
+}
+.r-artifact > a {
+  align-self: center;
 }
 .r-artifact code {
   display: block;

@@ -1,10 +1,12 @@
 """Offline checks of the harness tools: Modal stubbed with deterministic fold scores.
 Run: uv run python test_factory_tools.py"""
+import zipfile
 from types import SimpleNamespace
 
 import numpy as np
 
 import agent
+import factory_tools
 
 # true mean per family: the fake backend makes lightgbm best, logreg a close second
 TRUE = {"lightgbm": 0.86, "logreg": 0.855, "catboost": 0.84, "xgboost": 0.83, "random_forest": 0.82,
@@ -44,7 +46,8 @@ HOLD = {}
 def make_run(tmp_path="runs/test_memory.jsonl"):
     fns = {}
     agent.modal.Function.from_name = lambda app, name: fns.setdefault(name, FakeFn(name))
-    agent.upload_dataset = lambda df: "/datasets/fake.parquet"
+    factory_tools.upload_dataset = lambda df: "/datasets/fake.parquet"
+    factory_tools.download_file = lambda remote, local: open(local, "wb").write(b"model") and local
     run = agent.FactoryRun("data/churn.csv", "Churn", provider="scripted", purpose="find churners, explainable is a plus")
     run.memory_path = tmp_path
     y = run.hidden_df["Churn"].map({"No": 0, "Yes": 1}).to_numpy()
@@ -93,7 +96,9 @@ def test_scripted_run_end_to_end_exports_user_model():
     run.run()
     kinds = [e["kind"] for e in run.events]
     assert "rung" in kinds and "confirm" in kinds and kinds[-1] == "usage"
-    assert run.final and run.export and all(k in run.export for k in ("script", "params", "card"))
+    assert run.final and run.export and all(k in run.export for k in ("script", "params", "card", "model"))
+    with zipfile.ZipFile(run.export["zip"]) as z:
+        assert "model.joblib" in z.namelist() and "MODEL_CARD.md" in z.namelist()
 
 
 
