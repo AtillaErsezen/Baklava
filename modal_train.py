@@ -18,12 +18,19 @@ ESTIMATORS = {
     ("classification", "lightgbm"): ("lightgbm", "LGBMClassifier", {"random_state": SEED, "verbose": -1}),
     ("classification", "xgboost"): ("xgboost", "XGBClassifier", {"random_state": SEED, "n_jobs": -1, "tree_method": "hist"}),
     ("classification", "mlp"): ("sklearn.neural_network", "MLPClassifier", {"max_iter": 500, "early_stopping": True, "random_state": SEED}),
+    ("classification", "catboost"): ("catboost", "CatBoostClassifier", {"random_seed": SEED, "verbose": 0, "thread_count": -1}),
+    ("classification", "tabicl"): ("tabicl", "TabICLClassifier", {}),
     ("regression", "ridge"): ("sklearn.linear_model", "Ridge", {}),
     ("regression", "random_forest"): ("sklearn.ensemble", "RandomForestRegressor", {"n_estimators": 300, "n_jobs": -1, "random_state": SEED}),
     ("regression", "lightgbm"): ("lightgbm", "LGBMRegressor", {"random_state": SEED, "verbose": -1}),
     ("regression", "xgboost"): ("xgboost", "XGBRegressor", {"random_state": SEED, "n_jobs": -1, "tree_method": "hist"}),
     ("regression", "mlp"): ("sklearn.neural_network", "MLPRegressor", {"max_iter": 500, "early_stopping": True, "random_state": SEED}),
+    ("regression", "catboost"): ("catboost", "CatBoostRegressor", {"random_seed": SEED, "verbose": 0, "thread_count": -1}),
+    ("regression", "tabicl"): ("tabicl", "TabICLRegressor", {}),
 }
+# Models that only run on the GPU image. train_candidate and predict_holdout forward these to their _gpu twins,
+# but the agent should call train_candidate_gpu / predict_holdout_gpu directly to skip the idle CPU hop.
+GPU_MODELS = {"tabicl"}
 MODEL_MENU = {
     t: [m for (tt, m) in ESTIMATORS if tt == t] for t in ("classification", "regression")
 }
@@ -35,8 +42,10 @@ image = (
     .apt_install("libgomp1")  # lightgbm needs OpenMP
     # pandas/pyarrow must match the local venv: parquet is written locally, read here
     # ponytail: ML libs unpinned, pin to whatever the first green smoke test resolves
-    .uv_pip_install("pandas==3.0.6", "pyarrow==25.0.1", "scikit-learn", "lightgbm", "xgboost", "joblib")
+    .uv_pip_install("pandas==3.0.6", "pyarrow==25.0.1", "scikit-learn", "lightgbm", "xgboost", "catboost", "joblib")
 )
+# ponytail: tabicl pulls its checkpoint from Hugging Face on every cold start, cache it on the volume if that hurts
+gpu_image = image.uv_pip_install("torch", "tabicl")
 
 
 # ------------------------------------------------------------------ local side (your laptop)
@@ -62,15 +71,25 @@ def load_local(path: str):
 
 def upload_dataset(df) -> str:
     """Write df as parquet to the Modal volume. Returns the path inside the volume."""
-    import os
-    import tempfile
     import uuid
 
+    return upload_frame(df, uuid.uuid4().hex[:12])
+
+
+def upload_frame(df, name: str) -> str:
+    """Write df as /datasets/<name>.parquet on the Modal volume (e.g. a holdout split for
+    predict_holdout). Overwrites an existing file of that name. Returns the volume path."""
+    import os
+    import re
+    import tempfile
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name) or name.startswith("."):
+        raise ValueError(f"bad dataset name {name!r}: letters, digits, _ . - only")
     df = df.copy()
     for c in df.columns:  # mixed-type object columns break pyarrow
         if df[c].dtype == object:
             df[c] = df[c].where(df[c].isna(), df[c].astype(str))
-    remote = f"/datasets/{uuid.uuid4().hex[:12]}.parquet"
+    remote = f"/datasets/{name}.parquet"
     with tempfile.TemporaryDirectory() as tmp:
         p = os.path.join(tmp, "data.parquet")
         df.to_parquet(p, index=False)
@@ -101,10 +120,38 @@ def _clean(X):
     return X
 
 
+def _subsample_index(y, task, n, seed=SEED, n_bins=10):
+    """Pick exactly n row positions of y (sorted ascending, so time order survives),
+    stratified by class for classification or by n_bins quantile bins of y for regression.
+    NESTED: every row gets a fixed priority from default_rng(seed), so for one seed the
+    n=500 sample is a subset of the n=1500 one and fidelity levels share rows. Priority
+    is (rank of the row's random key within its stratum + 0.5) / stratum size, which
+    interleaves strata proportionally; taking the n lowest priorities keeps every
+    stratum within one row of its proportional share. Returns all rows if n >= len(y)."""
+    import numpy as np
+
+    y = np.asarray(y)
+    N = len(y)
+    if n >= N:
+        return np.arange(N)
+    key = np.random.default_rng(seed).random(N)
+    if task == "classification":
+        strata = np.unique(y.astype(str), return_inverse=True)[1]
+    else:
+        strata = np.argsort(np.argsort(y, kind="stable"), kind="stable") * min(n_bins, N) // N
+    prio = np.empty(N)
+    for s in np.unique(strata):
+        rows = np.flatnonzero(strata == s)
+        prio[rows[np.argsort(key[rows])]] = (np.arange(len(rows)) + 0.5) / len(rows)
+    return np.sort(np.lexsort((key, prio))[:n])
+
+
 def _load_xy(spec):
     """Read the spec's dataset from the volume and split it into (X, y, classes).
     Drops rows with a missing target, sorts by time_column when one is given (required
-    for timeseries CV), and removes drop_columns. For classification, y is
+    for timeseries CV), and removes drop_columns. If spec["train_rows"] is below the row
+    count, keeps a nested stratified subsample of that many rows (see _subsample_index,
+    seeded by spec["subsample_seed"], default SEED). For classification, y is
     label-encoded and `classes` holds the original labels in encoded order; for
     regression, y is float and `classes` is None."""
     import pandas as pd
@@ -115,6 +162,9 @@ def _load_xy(spec):
     df = df.dropna(subset=[target])
     if spec.get("time_column") and spec["time_column"] in df.columns:
         df = df.sort_values(spec["time_column"]).reset_index(drop=True)
+    if spec.get("train_rows") and spec["train_rows"] < len(df):
+        idx = _subsample_index(df[target].values, spec["task"], int(spec["train_rows"]), spec.get("subsample_seed", SEED))
+        df = df.iloc[idx].reset_index(drop=True)
     y = df[target]
     X = _clean(df.drop(columns=[target, *spec.get("drop_columns", [])], errors="ignore"))
     classes = None
@@ -134,7 +184,7 @@ def _build_pipeline(X, spec):
     Numeric columns are imputed (median by default) and scaled by default only for the
     scale-sensitive models (logreg, ridge, mlp). Categorical columns are imputed with
     the most frequent value, then one-hot encoded (capped at max_categories, default 20)
-    or ordinal encoded. The estimator gets the ESTIMATORS defaults with the spec's
+    or ordinal encoded (the default for catboost and tabicl). The estimator gets the ESTIMATORS defaults with the spec's
     params merged over them. Raises ValueError if the model isn't on the task's menu."""
     import importlib
 
@@ -154,7 +204,7 @@ def _build_pipeline(X, spec):
     num_steps = [("impute", SimpleImputer(strategy=prep.get("numeric_impute", "median")))]
     if prep.get("scale", model in ("logreg", "ridge", "mlp")):
         num_steps.append(("scale", StandardScaler()))
-    if prep.get("categorical", "onehot") == "ordinal":
+    if prep.get("categorical", "ordinal" if model in ("catboost", "tabicl") else "onehot") == "ordinal":
         enc = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
     else:
         enc = OneHotEncoder(handle_unknown="infrequent_if_exist", max_categories=prep.get("max_categories", 20))
@@ -168,16 +218,48 @@ def _build_pipeline(X, spec):
     return Pipeline([("prep", pre), ("model", est)])
 
 
-def _cv(spec):
-    """Pick the CV splitter: TimeSeriesSplit for cv="timeseries" (no shuffling, so
-    rows must already be in time order), otherwise a shuffled, seeded
-    StratifiedKFold for classification or KFold for regression."""
-    from sklearn.model_selection import KFold, StratifiedKFold, TimeSeriesSplit
+class PurgedKFold:
+    """K-fold over contiguous blocks in row order (rows must already be time sorted), with
+    no shuffling. For each test block, `gap` rows right before it and `embargo` rows right
+    after it are purged from training so labels that overlap in time cannot leak.
+    embargo=None means 1% of the rows. Works as a cv= argument to cross_validate."""
 
-    k = spec.get("cv_folds", 5)
-    if spec.get("cv") == "timeseries":
-        return TimeSeriesSplit(n_splits=k)
-    if spec["task"] == "classification":
+    def __init__(self, n_splits=5, gap=0, embargo=None):
+        self.n_splits, self.gap, self.embargo = n_splits, gap, embargo
+
+    def get_n_splits(self, X=None, y=None, groups=None):
+        return self.n_splits
+
+    def split(self, X, y=None, groups=None):
+        import numpy as np
+
+        n = len(X)
+        emb = int(0.01 * n) if self.embargo is None else self.embargo
+        idx = np.arange(n)
+        for test in np.array_split(idx, self.n_splits):
+            a, b = test[0], test[-1] + 1
+            yield idx[(idx < a - self.gap) | (idx >= b + emb)], test
+
+
+def _cv(spec):
+    """Pick the CV splitter from spec["cv"]:
+      "walk_forward": TimeSeriesSplit with spec["gap"] rows (default 0) between train and test;
+      "timeseries":   alias of walk_forward with gap 0;
+      "purged":       PurgedKFold with spec["gap"] and spec["embargo"] (default 1% of rows);
+      anything else:  shuffled, seeded StratifiedKFold (classification) or KFold (regression),
+                      or their Repeated* versions when spec["repeats"] > 1 (e.g. 10x10 CV).
+    The time-ordered schemes do not shuffle, so rows must already be sorted (time_column)."""
+    from sklearn.model_selection import KFold, RepeatedKFold, RepeatedStratifiedKFold, StratifiedKFold, TimeSeriesSplit
+
+    k, cv = spec.get("cv_folds", 5), spec.get("cv")
+    if cv in ("timeseries", "walk_forward"):
+        return TimeSeriesSplit(n_splits=k, gap=spec.get("gap", 0) if cv == "walk_forward" else 0)
+    if cv == "purged":
+        return PurgedKFold(k, spec.get("gap", 0), spec.get("embargo"))
+    clf = spec["task"] == "classification"
+    if spec.get("repeats", 1) > 1:
+        return (RepeatedStratifiedKFold if clf else RepeatedKFold)(n_splits=k, n_repeats=spec["repeats"], random_state=SEED)
+    if clf:
         return StratifiedKFold(k, shuffle=True, random_state=SEED)
     return KFold(k, shuffle=True, random_state=SEED)
 
@@ -213,9 +295,26 @@ def _top_features(pipe, k=10):
         return []
 
 
-@app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1200)
-def train_candidate(spec: dict) -> dict:
-    """Cross-validate ONE candidate. Never raises: errors come back so the agent can react."""
+def _predict_ms(pipe, X, n=50):
+    """Median wall time in ms of pipe.predict on one row, over the first n rows of X."""
+    import statistics
+    import time
+
+    times = []
+    for i in range(min(n, len(X))):
+        row = X.iloc[[i]]
+        t = time.perf_counter()
+        pipe.predict(row)
+        times.append((time.perf_counter() - t) * 1000)
+    return round(statistics.median(times), 3)
+
+
+def _train(spec):
+    """Body of train_candidate / train_candidate_gpu. Never raises.
+    Per metric: mean, std, train_mean, plus folds (per-fold validation scores, sign
+    corrected). Top level: fold_fit_seconds (per-fold fit time) and, only when
+    spec["measure_latency"], predict_ms (median single-row predict latency of the
+    last fold's fitted pipeline)."""
     import time
     import traceback
 
@@ -225,21 +324,41 @@ def train_candidate(spec: dict) -> dict:
     try:
         X, y, classes = _load_xy(spec)
         scoring = _scoring(spec["task"], len(classes) if classes else 0)
+        latency = bool(spec.get("measure_latency"))
         res = cross_validate(
             _build_pipeline(X, spec), X, y, cv=_cv(spec), scoring=scoring,
-            return_train_score=True, error_score="raise",
+            return_train_score=True, error_score="raise", return_estimator=latency,
         )
         metrics = {}
         for name, scorer in scoring.items():
             sign = -1 if scorer.startswith("neg_") else 1
             val, tr = sign * res[f"test_{name}"], sign * res[f"train_{name}"]
             metrics[name] = {"mean": round(float(val.mean()), 5), "std": round(float(val.std()), 5),
-                             "train_mean": round(float(tr.mean()), 5)}
-        return {"name": spec["name"], "ok": True, "metrics": metrics,
-                "n_rows": len(X), "fit_seconds": round(time.time() - t0, 1)}
+                             "train_mean": round(float(tr.mean()), 5), "folds": [round(float(v), 5) for v in val]}
+        out = {"name": spec["name"], "ok": True, "metrics": metrics,
+               "n_rows": len(X), "fit_seconds": round(time.time() - t0, 1),
+               "fold_fit_seconds": [round(float(t), 3) for t in res["fit_time"]]}
+        if latency:
+            out["predict_ms"] = _predict_ms(res["estimator"][-1], X)
+        return out
     except Exception as e:
         return {"name": spec.get("name"), "ok": False, "error": f"{type(e).__name__}: {e}",
                 "trace": traceback.format_exc()[-1500:]}
+
+
+@app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1200)
+def train_candidate(spec: dict) -> dict:
+    """Cross-validate ONE candidate. Never raises: errors come back so the agent can react.
+    GPU_MODELS specs are forwarded to train_candidate_gpu (call that directly to skip this hop)."""
+    if spec.get("model") in GPU_MODELS:
+        return train_candidate_gpu.remote(spec)
+    return _train(spec)
+
+
+@app.function(image=gpu_image, volumes={DATA_DIR: vol}, gpu="L4", cpu=4, memory=16384, timeout=1800)
+def train_candidate_gpu(spec: dict) -> dict:
+    """Same as train_candidate on an L4 GPU with tabicl + torch installed. Route tabicl specs here."""
+    return _train(spec)
 
 
 @app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1800)
@@ -258,6 +377,49 @@ def fit_final(spec: dict, run_id: str) -> dict:
     joblib.dump({"pipeline": pipe, "classes": classes, "spec": spec}, path)
     vol.commit()
     return {"model_path": path.removeprefix(DATA_DIR), "n_rows": len(X), "top_features": _top_features(pipe)}
+
+
+def _predict_holdout(spec, holdout_path):
+    """Fit on the spec's dataset (train_rows respected) and predict the holdout parquet at
+    holdout_path on the volume. The holdout goes through the same target dropna,
+    drop_columns and _clean as training, and its columns are aligned to the training ones.
+    y_true uses the training label encoding (-1 for a label never seen in training)."""
+    import pandas as pd
+
+    X, y, classes = _load_xy(spec)
+    pipe = _build_pipeline(X, spec)
+    pipe.fit(X, y)
+    target = spec["target"]
+    hd = pd.read_parquet(f"{DATA_DIR}{holdout_path}").dropna(subset=[target])
+    Xh = _clean(hd.drop(columns=[target, *spec.get("drop_columns", [])], errors="ignore")).reindex(columns=X.columns)
+    pred = pipe.predict(Xh)
+    proba = None
+    if classes is not None:
+        code = {c: i for i, c in enumerate(classes)}
+        y_true = [code.get(v, -1) for v in hd[target].astype(str)]
+        pred = [int(p) for p in pred]
+        if len(classes) == 2:
+            proba = [round(float(p), 6) for p in pipe.predict_proba(Xh)[:, 1]]
+    else:
+        y_true = hd[target].astype(float).tolist()
+        pred = [float(p) for p in pred]
+    return {"name": spec["name"], "y_true": y_true, "pred": pred, "proba": proba, "classes": classes}
+
+
+@app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1800)
+def predict_holdout(spec: dict, holdout_path: str) -> dict:
+    """Fit the spec, predict a holdout already on the volume (see upload_frame). Returns
+    {"name", "y_true", "pred", "proba" (positive-class prob for binary, else None), "classes"};
+    for classification y_true and pred are codes into classes. GPU_MODELS go to predict_holdout_gpu."""
+    if spec.get("model") in GPU_MODELS:
+        return predict_holdout_gpu.remote(spec, holdout_path)
+    return _predict_holdout(spec, holdout_path)
+
+
+@app.function(image=gpu_image, volumes={DATA_DIR: vol}, gpu="L4", cpu=4, memory=16384, timeout=1800)
+def predict_holdout_gpu(spec: dict, holdout_path: str) -> dict:
+    """predict_holdout on the GPU image, for tabicl."""
+    return _predict_holdout(spec, holdout_path)
 
 
 @app.local_entrypoint()
