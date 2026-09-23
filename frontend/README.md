@@ -4,11 +4,26 @@ Responsive landing page for Baklava, built with React, TypeScript, and Vite. Fon
 
 ## Development
 
+Install [Node.js 24 LTS](https://nodejs.org/en/download) first. The project supports Node 22 (22.18 or later), or Node 24 and newer; this covers Vite's runtime requirements and the native TypeScript support used by the tests. npm rejects older versions during installation. `.nvmrc` selects Node 24 for compatible version managers.
+
 ```sh
 cd frontend
 npm ci
 npm run dev
 ```
+
+### Windows: missing Rolldown native binding
+
+If startup reports `Cannot find native binding` or a missing `@rolldown/binding-win32-x64-msvc`, update Node first, close and reopen PowerShell, then run:
+
+```powershell
+cd C:\path\to\Baklava\frontend # Replace with your checkout location.
+node --version # Should show v24.x after installing Node 24 LTS.
+npm ci --include=optional
+npm run dev
+```
+
+Stop any running dev server before reinstalling. `npm ci` replaces `node_modules` using the committed lockfile, which already includes Windows x64 and ARM64 bindings. Keep `package-lock.json`; do not copy `node_modules` between computers. The project `.npmrc` includes optional packages because Vite and the linter need native bindings for the current platform. If `node --version` still reports the old version, use `where.exe node` to locate the older installation on your PATH.
 
 ## Checks and production build
 
@@ -48,7 +63,9 @@ Run `npm test` for adapter, metric-direction, file-validation, and local endpoin
 
 ## Upload a dataset and train
 
-Open `/#training` or choose **New training**. Upload a comma-separated UTF-8 CSV (50–100,000 rows, up to 200 columns / 20 MB), review the first five rows, select the target, and optionally choose the prediction type and describe your goal. Start training to run the existing `FactoryRun` with **Nebius** and **Modal**. The page displays actual agent progress and automatically opens results only after a final model and report have been saved. Failed sessions show an error, a local log path, and any partial results.
+Open `/#training` or choose **New training**. Upload a comma-separated UTF-8 CSV (50–100,000 rows, up to 200 columns / 20 MB), review the first five rows, select the target, and optionally choose the prediction type and describe your goal. Start training to run the existing `FactoryRun` with **Nebius** and **Modal**. The page displays actual agent progress and opens results after a final model and report have been saved. Failed sessions show an error, a local log path, and any partial results.
+
+You can browse saved or sample results during training. The sidebar and results banner keep the current session visible; **View training** returns to its progress. Reloading the workspace reconnects to the session. If training finishes while you are browsing another result, a **Results ready** indicator appears without changing your selection. Returning to the session opens the completed result.
 
 Before the first cloud run, from the repository root:
 
@@ -80,3 +97,5 @@ npm --prefix frontend run build
 ```
 
 These tests use a stubbed agent/worker and make no paid cloud calls. An optional isolated browser fixture is available with `node frontend/tests/browser-fixture.ts`; its clearly labeled simulated results use temporary storage and port 5187, and never reach Modal or Nebius. Stop it with Ctrl+C after testing.
+
+For navigation regression checks, set `BAKLAVA_FIXTURE_DELAY_MS=120000` in the fixture's environment. Start a simulated session, switch to another result, use **View training** to return, and refresh Results to check session recovery. Let training finish while viewing a different result: the selected result should stay open with a **Results ready** indicator. Check the same return link at a mobile viewport.

@@ -10,6 +10,7 @@ import { localRuns } from "../server/runs.ts";
 const project = fileURLToPath(new URL("../../", import.meta.url));
 const temporary = await mkdtemp(join(tmpdir(), "baklava-browser-qa-"));
 const actual = pythonWorker(project);
+const trainingDelay = Number(process.env.BAKLAVA_FIXTURE_DELAY_MS || 8000);
 const server = await createServer({
   configFile: false,
   root: join(project, "frontend"),
@@ -99,7 +100,7 @@ const server = await createServer({
                 }),
               );
             })(),
-          8000,
+          trainingDelay,
         );
       },
     }),

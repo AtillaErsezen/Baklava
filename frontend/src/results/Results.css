@@ -146,6 +146,86 @@
   background: #b1cc8e16;
   border-radius: 2px;
 }
+.r-session-link {
+  display: grid;
+  gap: 6px;
+  padding: 13px 11px;
+  margin-bottom: 12px;
+  border: 1px solid #344235;
+  border-radius: 4px;
+  background: #18221c;
+}
+.r-session-link.selected,
+.r-session-link:hover {
+  border-color: #718c53;
+}
+.r-session-link .r-label {
+  color: var(--accent);
+  font-size: 8px;
+}
+.r-session-link strong {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.r-session-link small {
+  color: var(--r-muted);
+  font-size: 10px;
+}
+.r-session-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  margin-bottom: 25px;
+  border: 1px solid #4c603b;
+  border-radius: 5px;
+  background: #1b271c;
+  color: var(--accent);
+}
+.r-session-banner:hover {
+  background: #24321f;
+}
+.r-session-banner > svg {
+  flex-shrink: 0;
+}
+.r-session-banner > span:first-of-type {
+  flex: 1;
+  min-width: 0;
+}
+.r-session-banner strong {
+  display: block;
+  font-size: 12px;
+}
+.r-session-banner small {
+  display: block;
+  color: #afbcaa;
+  font-size: 11px;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+.r-session-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.r-session-banner.failed {
+  border-color: #856946;
+  background: #2b241b;
+  color: #e9c592;
+}
+@media (max-width: 600px) {
+  .r-session-banner {
+    flex-wrap: wrap;
+  }
+  .r-session-action {
+    width: 100%;
+    padding-left: 34px;
+  }
+}
 .r-run-heading {
   margin-top: 34px;
   margin-bottom: 8px;

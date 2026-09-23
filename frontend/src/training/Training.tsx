@@ -39,7 +39,7 @@ type Setup = {
   ready: boolean;
   issues: { label: string; detail: string; command?: string }[];
 };
-type Session = {
+export type Session = {
   id: string;
   datasetId: string;
   filename: string;
@@ -101,9 +101,13 @@ function remembered() {
 }
 export default function Training({
   hidden,
+  session,
+  onSessionChange: setSession,
   onComplete,
 }: {
   hidden: boolean;
+  session: Session | null;
+  onSessionChange: (session: Session | null) => void;
   onComplete: (file: string) => Promise<void>;
 }) {
   const [dataset, setDataset] = useState<Dataset | null>(null),
@@ -111,7 +115,6 @@ export default function Training({
     [task, setTask] = useState("auto"),
     [purpose, setPurpose] = useState("");
   const [setup, setSetup] = useState<Setup | null>(null),
-    [session, setSession] = useState<Session | null>(null),
     [error, setError] = useState("");
   const [uploading, setUploading] = useState(false),
     [starting, setStarting] = useState(false),
@@ -167,11 +170,14 @@ export default function Training({
     fetch("/api/training/sessions", { signal: controller.signal })
       .then(jsonResponse)
       .then((all: Session[]) => {
+        if (controller.signal.aborted) return;
         const running = all.find(active),
           stored = all.find((s) => s.id === remembered());
         if (running || stored) {
           shouldOpen.current = true;
-          setSession(running || stored!);
+          const restored = running || stored!;
+          remember(restored.id);
+          setSession(restored);
         }
       })
       .catch(() => {});
@@ -180,7 +186,7 @@ export default function Training({
       controller.abort();
       uploadRequest.current?.abort();
     };
-  }, []);
+  }, [setSession]);
   useEffect(() => {
     if (!sessionId || !["queued", "running"].includes(sessionStatus || ""))
       return;
@@ -193,8 +199,10 @@ export default function Training({
             signal: controller.signal,
           }),
         );
-        setSession(next);
-        setConnection("");
+        if (!controller.signal.aborted) {
+          setSession(next);
+          setConnection("");
+        }
       } catch (e) {
         if (!controller.signal.aborted)
           setConnection(`${(e as Error).message} Retrying automatically.`);
@@ -206,26 +214,28 @@ export default function Training({
       controller.abort();
       clearTimeout(timer);
     };
-  }, [sessionId, sessionStatus]);
+  }, [sessionId, sessionStatus, setSession]);
   useEffect(() => {
     if (
       session?.status === "completed" &&
       session.resultFile &&
+      !hidden &&
       shouldOpen.current &&
       delivered.current !== session.id
     ) {
       delivered.current = session.id;
       shouldOpen.current = false;
-      remember(null);
-      complete.current(session.resultFile).catch((e) => {
-        if (mounted.current)
-          setError(
-            `Training finished, but results could not be opened: ${(e as Error).message}`,
-          );
-      });
+      complete
+        .current(session.resultFile)
+        .then(() => remember(null))
+        .catch((e) => {
+          if (mounted.current)
+            setError(
+              `Training finished, but results could not be opened: ${(e as Error).message}`,
+            );
+        });
     }
-    if (session?.status === "failed") remember(null);
-  }, [session]);
+  }, [session, hidden]);
   async function upload(file?: File) {
     if (!file || busy) return;
     setError("");
@@ -299,6 +309,8 @@ export default function Training({
     }
   }
   function reset() {
+    remember(null);
+    shouldOpen.current = false;
     setSession(null);
     setDataset(null);
     setTarget("");
@@ -333,7 +345,7 @@ export default function Training({
       <div className="r-breadcrumb">
         <a href="#results">Workspace</a>
         <Chevron />
-        <strong>New training session</strong>
+        <strong>{session ? "Training session" : "New training session"}</strong>
       </div>
       <div className="r-page-heading">
         <div>
@@ -476,6 +488,7 @@ export default function Training({
                 <button
                   className="r-button t-secondary"
                   onClick={() => {
+                    remember(null);
                     setSession(null);
                     settingsChanged();
                     void refreshSetup();
@@ -499,7 +512,7 @@ export default function Training({
           )}
           <p className="t-running-note">
             {active(session)
-              ? "Results will open automatically when the agent finishes its final model and report. Training duration depends on your dataset and available compute."
+              ? "You can browse other results while training continues. Return using View training. Results open automatically when you are viewing this session; otherwise, we will show when they are ready."
               : "Your session and results are saved in this workspace."}
           </p>
         </>

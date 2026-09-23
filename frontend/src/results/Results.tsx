@@ -40,6 +40,7 @@ import type { Model, Run } from "./data";
 import { samples } from "./samples";
 import "./Results.css";
 import Training from "../training/Training";
+import type { Session } from "../training/Training";
 
 type View = "Overview" | "Models" | "Report" | "Activity";
 const views: View[] = ["Overview", "Models", "Report", "Activity"];
@@ -405,6 +406,19 @@ function Report({ run }: { run: Run }) {
   );
 }
 export default function Results({ training = false }: { training?: boolean }) {
+  const [session, setSession] = useState<Session | null>(null);
+  const trainingActive =
+    session?.status === "queued" || session?.status === "running";
+  const trainingLabel = trainingActive
+    ? "View training"
+    : session
+      ? "View session"
+      : "New training";
+  const sessionLabel = trainingActive
+    ? "Training in progress"
+    : session?.status === "completed"
+      ? "Results ready"
+      : "Training needs attention";
   const [runs, setRuns] = useState<Run[]>(samples),
     [selected, setSelected] = useState(samples[0].id);
   const [view, setView] = useState<View>("Overview"),
@@ -581,8 +595,24 @@ export default function Results({ training = false }: { training?: boolean }) {
               href="#training"
               className={`r-button r-button-primary r-new-training ${training ? "current" : ""}`}
             >
-              <Plus size={15} /> New training
+              {trainingActive ? (
+                <LoaderCircle size={15} className="spin" />
+              ) : (
+                <Plus size={15} />
+              )}{" "}
+              {trainingLabel}
             </a>
+            {session && (
+              <a
+                href="#training"
+                className={`r-session-link ${training ? "selected" : ""}`}
+                aria-current={training ? "page" : undefined}
+              >
+                <span className="r-label">{sessionLabel}</span>
+                <strong title={session.filename}>{session.filename}</strong>
+                <small>{session.stage}</small>
+              </a>
+            )}
             <a
               href="#results"
               className={`r-nav-current ${!training ? "selected" : ""}`}
@@ -606,8 +636,8 @@ export default function Results({ training = false }: { training?: boolean }) {
                 .map((r) => (
                   <button
                     key={r.id}
-                    className={selected === r.id ? "selected" : ""}
-                    aria-pressed={selected === r.id}
+                    className={!training && selected === r.id ? "selected" : ""}
+                    aria-pressed={!training && selected === r.id}
                     onClick={() => selectRun(r.id)}
                   >
                     <FileSpreadsheet size={16} />
@@ -615,7 +645,9 @@ export default function Results({ training = false }: { training?: boolean }) {
                       {r.label}
                       <small>{r.task}</small>
                     </span>
-                    {selected === r.id && <span className="r-selected-dot" />}
+                    {!training && selected === r.id && (
+                      <span className="r-selected-dot" />
+                    )}
                   </button>
                 ))}
             </div>
@@ -631,8 +663,10 @@ export default function Results({ training = false }: { training?: boolean }) {
                       <button
                         title={r.id}
                         key={r.id}
-                        aria-pressed={selected === r.id}
-                        className={selected === r.id ? "selected" : ""}
+                        aria-pressed={!training && selected === r.id}
+                        className={
+                          !training && selected === r.id ? "selected" : ""
+                        }
                         onClick={() => selectRun(r.id)}
                       >
                         <FileJson size={16} />
@@ -682,8 +716,37 @@ export default function Results({ training = false }: { training?: boolean }) {
           </div>
         </aside>
         <main id="results-content" className="r-main">
-          <Training hidden={!training} onComplete={openTrainingResult} />
+          <Training
+            hidden={!training}
+            session={session}
+            onSessionChange={setSession}
+            onComplete={openTrainingResult}
+          />
           <div hidden={training}>
+            {session && (
+              <a
+                href="#training"
+                className={`r-session-banner ${session.status}`}
+              >
+                {trainingActive ? (
+                  <LoaderCircle size={20} className="spin" />
+                ) : session.status === "completed" ? (
+                  <CircleCheck size={20} />
+                ) : (
+                  <TriangleAlert size={20} />
+                )}
+                <span>
+                  <strong>{sessionLabel}</strong>
+                  <small>
+                    {session.filename} · {session.stage}
+                  </small>
+                </span>
+                <span className="r-session-action">
+                  {trainingLabel}
+                  <ArrowRight size={14} />
+                </span>
+              </a>
+            )}
             <div className="r-breadcrumb">
               <span>Workspace</span>
               <ChevronRight size={12} />
@@ -703,7 +766,12 @@ export default function Results({ training = false }: { training?: boolean }) {
               </div>
               <div className="r-page-actions">
                 <a className="r-button t-secondary" href="#training">
-                  <Plus size={14} /> New training
+                  {trainingActive ? (
+                    <LoaderCircle size={14} className="spin" />
+                  ) : (
+                    <Plus size={14} />
+                  )}{" "}
+                  {trainingLabel}
                 </a>
                 <button
                   className="r-button r-button-primary"
