@@ -162,10 +162,10 @@ def _fetch(url: str, dns: dict, routes: dict, **kw):
 
 def test_accepts_public_csv():
     dns = {"data.openml.org": [PUBLIC_IP]}
-    routes = {"data.openml.org/x.csv?v=1": FakeResp(200, b"a,b\n1,2\n3,4\n")}
+    routes = {"data.openml.org/x.csv": FakeResp(200, b"a,b\n1,2\n3,4\n")}
     df, calls = _fetch("https://data.openml.org/x.csv?v=1", dns, routes)
     assert isinstance(df, pd.DataFrame) and df.shape == (2, 2) and list(df.columns) == ["a", "b"]
-    assert calls == [("data.openml.org", PUBLIC_IP, "/x.csv?v=1")]
+    assert calls == [("data.openml.org", PUBLIC_IP, "/x.csv")]  # query stripped: no data rides out
 
 
 def test_follows_safe_redirect_and_caps_rows():

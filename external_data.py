@@ -18,7 +18,7 @@ import re
 import socket
 import ssl
 import time
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import numpy as np
 import pandas as pd
@@ -107,6 +107,8 @@ def find_file_links(url: str) -> list[str]:
     """Return direct https data-file links for a URL (itself, or links found on the page)."""
     if _has_data_ext(url):
         return [_github_raw(url)]
+    if not _on_domain(_host(url), tuple(SEARCH_DOMAINS)):
+        return []  # never let Tavily extract fetch an arbitrary host for us
     client = _client()
     if client is None:
         return []
@@ -260,7 +262,7 @@ def _parse(body: bytes, ext: str, max_rows: int, cap: int) -> pd.DataFrame:
 
 def safe_fetch(url: str, max_bytes: int = 50_000_000, timeout: float = 30, max_rows: int = 200_000) -> pd.DataFrame:
     """Download a public csv/tsv/csv.gz/parquet over hardened https and parse it (timeout is total)."""
-    url = _github_raw(url)
+    url = urlunsplit(urlsplit(_github_raw(url))._replace(query="", fragment=""))  # no data rides out in a query
     ext = next((e for e in DATA_EXTS if urlsplit(url).path.lower().endswith(e)), None)
     if ext is None:
         raise FetchError(f"unsupported file type; allowed: {', '.join(DATA_EXTS)} (never pickle/joblib/npy)")

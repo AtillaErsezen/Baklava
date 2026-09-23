@@ -202,12 +202,11 @@ def render_train_script(spec: dict, purpose: str | None = None) -> str:
                    f'max_categories={int(prep.get("max_categories", 20))})')
     lib = mod.split(".")[0]
     pip = " ".join(p for p in ("pandas", SKLEARN_PKG, PIP_NAMES.get(lib)) if p)
-    doc = (purpose or "not stated").replace("\\", "/").replace('"""', "'''")
     src = SCRIPT.substitute(
-        name=spec["name"], task=spec["task"], module=mod, cls=cls, pip=pip,
-        purpose=doc, target=spec["target"], cv=int(spec.get("cv_folds", 5)),
-        metric=_metric(spec), seed=SEED,
-        params_doc="\n".join(f"    {k} = {v!r}" for k, v in sorted(params.items())),
+        name=spec["name"], task=_doc(spec["task"]), module=mod, cls=cls, pip=pip,
+        purpose=_doc(purpose or "not stated"), target=_doc(spec["target"]), cv=int(spec.get("cv_folds", 5)),
+        metric=_doc(_metric(spec)), seed=SEED,
+        params_doc="\n".join(_doc(f"    {k} = {v!r}") for k, v in sorted(params.items())),
         task_r=repr(spec["task"]), target_r=repr(spec["target"]),
         drop_r=repr(list(spec.get("drop_columns") or [])),
         time_r=repr(spec.get("time_column")), cv_mode_r=repr(spec.get("cv")),
@@ -235,7 +234,13 @@ def _flatten(d: dict, prefix: str = "") -> list[tuple[str, object]]:
 
 def _table(rows: list[tuple[str, object]], head: tuple[str, str]) -> list[str]:
     return [f"| {head[0]} | {head[1]} |", "|---|---|",
-            *(f"| {k} | {_fmt(v)} |" for k, v in rows)]
+            *(f"| {_plain(k)} | {_plain(_fmt(v)).replace('|', '/')} |" for k, v in rows)]
+
+
+def _doc(text) -> str:
+    """Untrusted text inside the generated script's docstring: no double quotes and no
+    backslashes, so nothing can close the docstring and inject code."""
+    return str(text).replace("\\", "/").replace('"', "'")
 
 
 def _plain(text) -> str:
@@ -249,9 +254,9 @@ def render_model_card(spec: dict, metrics: dict, purpose: str | None,
     mod, cls, params = _estimator(spec)
     extra = extra or {}
     name, metric = spec["name"], _metric(spec)
-    out = [f"# Model card: {name}", "", "## Purpose", "", purpose or "Not stated.", "",
-           "## Model", "", f"`{mod}.{cls}` for {spec['task']}, target "
-           f"`{spec['target']}`, primary metric `{metric}`.", "",
+    out = [f"# Model card: {name}", "", "## Purpose", "", _plain(purpose or "Not stated."), "",
+           "## Model", "", f"`{mod}.{cls}` for {_plain(spec['task'])}, target "
+           f"`{_plain(spec['target']).replace('`', "'")}`, primary metric `{_plain(metric)}`.", "",
            "### Hyperparameters", "", *_table(sorted(params.items()), ("param", "value")),
            "", "## Metrics", ""]
     if "cv_mean" in metrics:

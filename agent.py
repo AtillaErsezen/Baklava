@@ -341,11 +341,11 @@ class FactoryRun(PipelineTools):
         self.rounds += 1
 
         base = {"dataset_path": self.remote_path, "target": self.target, "task": task,
-                "cv": inp.get("cv", "kfold"), "cv_folds": inp.get("cv_folds", 5),
+                "cv": inp.get("cv", "kfold"), "cv_folds": min(max(int(inp.get("cv_folds", 5)), 3), 10),
                 "time_column": inp.get("time_column"), "drop_columns": inp.get("drop_columns", [])}
         specs = []
         for c in cands:
-            name = c["name"] if c["name"] not in self.specs else f"{c['name']}_r{self.rounds}"
+            name = c["name"] if c["name"] not in self.specs else f"{c['name'][:56]}_r{self.rounds}"
             spec = {**base, "name": name, "model": c["model"],
                     "params": c.get("params") or {}, "preprocessing": c.get("preprocessing") or {}}
             self.specs[name] = spec

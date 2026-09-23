@@ -35,9 +35,11 @@ MODEL_MENU = {
     t: [m for (tt, m) in ESTIMATORS if tt == t] for t in ("classification", "regression")
 }
 
-NAME_RE = r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}"  # candidate and dataset names become file names
+NAME_RE = r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}"  # no leading "-" or "."  # candidate and dataset names become file names
 MAX_ROUNDS_PARAM = 5000  # cap on n_estimators / iterations / max_iter (resource guard)
 _ITER_KEYS = ("n_estimators", "iterations", "max_iter")
+SIZE_CAPS = {"num_leaves": 4096, "max_leaves": 4096, "max_depth": 64, "depth": 16, "max_bin": 1024,
+             "batch_size": 4096, "max_ctr_complexity": 8, "one_hot_max_size": 255}
 # Constructor kwargs the LLM, the search space or stored memory may set, per model. Anything else
 # (e.g. LightGBM machines/tree_learner, CatBoost train_dir, callbacks, file paths) is rejected.
 ALLOWED_PARAMS = {
@@ -78,6 +80,14 @@ def check_params(model: str, params: dict) -> dict:
         v = params.get(k)
         if v is not None and (not isinstance(v, (int, float)) or v > MAX_ROUNDS_PARAM):
             raise ValueError(f"{k}={v!r} exceeds the cap of {MAX_ROUNDS_PARAM}")
+    for k, cap in SIZE_CAPS.items():  # memory guard: an OOM kill would skip _train's error handling
+        v = params.get(k)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v <= cap):
+            raise ValueError(f"{k}={v!r} must be a number in (0, {cap}]")
+    h = params.get("hidden_layer_sizes")
+    if h is not None and (not isinstance(h, (list, tuple)) or not 1 <= len(h) <= 4
+                          or not all(isinstance(w, int) and 0 < w <= 1024 for w in h)):
+        raise ValueError(f"hidden_layer_sizes={h!r} must be 1-4 layers of 1-1024 units")
     return params
 
 
