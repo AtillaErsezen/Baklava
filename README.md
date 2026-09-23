@@ -1,3 +1,7 @@
+## Demo file
+
+[Watch or download demo.mp4](demo.mp4)
+
 # Baklava: ML Factory
 
 Give it a tabular dataset and a target column. Claude profiles the data, plans experiments,
