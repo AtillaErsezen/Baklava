@@ -8,6 +8,7 @@ ML Factory agent (open-weight LLM on Nebius Token Factory).
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -264,6 +265,35 @@ def _maybe_supabase():
         return None
 
 
+# inspect_column output reaches the LLM, whose narration lands in a publicly readable event feed. k-anonymity:
+# a raw value is shown only if at least K_MIN rows share it and it does not look like personal data.
+K_MIN = 5
+PII_PATTERNS = [re.compile(p) for p in (
+    r"[\w.+-]+@[\w-]+\.[\w.-]+",           # email
+    r"(?i)\b(?:https?://|www\.)\S+",       # url
+    r"\d(?:[\s().-]{0,2}\d){6,}",          # phone (7+ digits), card or national id (13+), optional separators
+)]
+ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?")  # a date is not a phone number
+PRIVACY_NOTE = (f"Values shared by fewer than {K_MIN} rows or that look like personal data (email, phone, url, "
+                "id number) are masked; numeric columns show a summary instead of raw values.")
+
+
+def _privacy_mask(values: pd.Series) -> tuple[dict, dict, dict]:
+    """Map each distinct (non-missing, string) value to what the LLM may see: itself, or a token numbered by
+    first appearance (never derived from the value). Returns (display map, target-rate map where rare values
+    pool into one bucket, masked counts of distinct values)."""
+    counts, shown, pooled, masked = values.value_counts(), {}, {}, {"rare": 0, "pii_like": 0}
+    for v in pd.unique(values):
+        rare = counts[v] < K_MIN
+        pii = not ISO_DATE.fullmatch(v) and any(p.search(v) for p in PII_PATTERNS)
+        kind = "pii_like" if pii else "rare" if rare else None
+        if kind:
+            masked[kind] += 1
+        shown[v] = f"<{kind.replace('_', '-')} value #{masked[kind]}>" if kind else v
+        pooled[v] = "<rare values>" if rare else shown[v]
+    return shown, pooled, masked
+
+
 class FactoryRun(PipelineTools):
     """One end-to-end run: load data, profile it, drive the agent loop through
     its tools (profile/inspect/experiment/finalize/report), and save the result.
@@ -319,20 +349,32 @@ class FactoryRun(PipelineTools):
         return self.profile
 
     def tool_inspect_column(self, inp):
-        """Drill into one column: dtype, sample values, value counts, and: for a
-        classification target: the target rate per value, to help the agent confirm
-        or rule out leakage/id-like columns flagged by the profile."""
+        """Drill into one column: dtype, sample values (a quantile summary for numeric
+        columns), value counts, and: for a classification target: the target rate per
+        value, to help the agent confirm or rule out leakage/id-like columns flagged by
+        the profile. Values are k-anonymized first (_privacy_mask): the output is public."""
         c = inp["column"]
         if c not in self.df.columns:
             return {"error": f"Unknown column '{c}'"}
         s = self.df[c]
-        out = {"dtype": str(s.dtype), "sample": s.dropna().astype(str).head(10).tolist(),
-               "value_counts": {str(k): int(v) for k, v in s.value_counts(dropna=False).head(15).items()}}
-        if self.profile["target"]["suggested_task"] == "classification" and s.nunique() <= 50:
-            ct = pd.crosstab(s.astype(str), self.df[self.target].astype(str), normalize="index").round(3).head(15)
-            out["target_rate_by_value"] = {str(k): {str(kk): float(vv) for kk, vv in row.items()}
-                                           for k, row in ct.iterrows()}
-        return out
+        numeric = pd.api.types.is_numeric_dtype(s) and not pd.api.types.is_bool_dtype(s)
+        nun = int(s.nunique())
+        out, masked = {"dtype": str(s.dtype)}, {"rare": 0, "pii_like": 0}
+        if numeric:
+            q = [_r(x) for x in s.quantile([0, 0.25, 0.5, 0.75, 1])]
+            out["summary"] = {**dict(zip(("min", "p25", "median", "p75", "max"), q)), "n_unique": nun}
+        if not numeric or nun <= 20:  # per-value output only for effectively categorical columns
+            st = s.astype(str)
+            shown, pooled, masked = _privacy_mask(st.dropna())
+            if not numeric:
+                out["sample"] = st.dropna().head(10).map(shown).tolist()
+            out["value_counts"] = {"nan" if pd.isna(k) else shown[k]: int(v)
+                                   for k, v in st.value_counts(dropna=False).head(15).items()}
+            if self.profile["target"]["suggested_task"] == "classification" and nun <= 50:
+                ct = pd.crosstab(st.map(pooled), self.df[self.target].astype(str), normalize="index").round(3).head(15)
+                out["target_rate_by_value"] = {str(k): {str(kk): float(vv) for kk, vv in row.items()}
+                                               for k, row in ct.iterrows()}
+        return {**out, "masked": masked, "privacy_note": PRIVACY_NOTE}
 
     def tool_run_experiments(self, inp):
         """Validate and enqueue a round of candidates, upload the dataset to Modal on
