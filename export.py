@@ -5,7 +5,10 @@ import os
 import pprint
 from string import Template
 
-from modal_train import ESTIMATORS, SEED
+import html
+import re
+
+from modal_train import ESTIMATORS, SEED, check_name
 
 SCALED_MODELS = ("logreg", "ridge", "mlp")
 DEFAULT_METRIC = {"classification": "roc_auc", "regression": "rmse"}
@@ -235,6 +238,11 @@ def _table(rows: list[tuple[str, object]], head: tuple[str, str]) -> list[str]:
             *(f"| {k} | {_fmt(v)} |" for k, v in rows)]
 
 
+def _plain(text) -> str:
+    """Untrusted text (column names, findings) as one escaped line: no headings, no HTML."""
+    return html.escape(re.sub(r"\s+", " ", str(text)).strip()[:300], quote=False)
+
+
 def render_model_card(spec: dict, metrics: dict, purpose: str | None,
                       caveats: list[str], extra: dict | None) -> str:
     """Render a markdown model card for the exported candidate."""
@@ -263,7 +271,7 @@ def render_model_card(spec: dict, metrics: dict, purpose: str | None,
                 f"Predict positive when probability >= {_fmt(extra['threshold'])}.", ""]
     if "complexity" in extra:
         out += ["## Complexity (Big-O)", "", str(extra["complexity"]), ""]
-    out += ["## Caveats", "", *([f"- {c}" for c in caveats] or ["- None recorded."]), "",
+    out += ["## Caveats", "", *([f"- {_plain(c)}" for c in caveats] or ["- None recorded."]), "",
             "## How to retrain", "",
             f"    python train_{name}.py data.csv --target {spec['target']} "
             f"--out model.joblib --cv {int(spec.get('cv_folds', 5))}", "",
@@ -282,6 +290,7 @@ def render_model_card(spec: dict, metrics: dict, purpose: str | None,
 def export_bundle(spec: dict, metrics: dict, out_dir: str, purpose: str | None = None,
                   caveats: tuple | list = (), extra: dict | None = None) -> dict[str, str]:
     """Write script, params.json and MODEL_CARD.md into out_dir; return paths."""
+    check_name(spec["name"])
     os.makedirs(out_dir, exist_ok=True)
     paths = {"script": os.path.join(out_dir, f"train_{spec['name']}.py"),
              "params": os.path.join(out_dir, "params.json"),

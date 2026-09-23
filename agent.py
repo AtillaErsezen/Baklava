@@ -13,7 +13,7 @@ import uuid
 import modal
 import pandas as pd
 
-from modal_train import APP_NAME, MODEL_MENU, load_local
+from modal_train import APP_NAME, MODEL_MENU, check_name, check_params, load_local
 from factory_tools import GPU_MODELS, HIGHER_IS_BETTER, PipelineTools, compact
 from providers import NebiusClient, ScriptedClient, parse_arguments, to_openai_tools
 
@@ -326,6 +326,12 @@ class FactoryRun(PipelineTools):
         if pm not in (("roc_auc", "f1_macro", "accuracy") if task == "classification" else ("rmse", "mae", "r2")):
             return {"error": f"Metric '{pm}' does not fit task '{task}'."}
         cands = inp["candidates"][:MAX_CANDIDATES]
+        try:
+            for c in cands:
+                check_name(c["name"])
+                check_params(c["model"], dict(c.get("params") or {}))
+        except ValueError as e:
+            return {"error": str(e)}
         bad = [c["name"] for c in cands if c["model"] not in MODEL_MENU[task]]
         if bad:
             return {"error": f"Invalid models for {task}: {bad}. Allowed: {MODEL_MENU[task]}"}

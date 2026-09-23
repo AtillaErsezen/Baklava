@@ -19,7 +19,7 @@ import sampling
 import search_space as ss
 import stats_tests as st
 from export import export_bundle
-from modal_train import upload_dataset
+from modal_train import check_name, check_params, upload_dataset
 
 HIGHER_IS_BETTER = {"roc_auc": True, "f1_macro": True, "accuracy": True, "r2": True, "rmse": False, "mae": False}
 TASK_METRICS = {"classification": ("roc_auc", "f1_macro", "accuracy"), "regression": ("rmse", "mae", "r2")}
@@ -57,6 +57,16 @@ def _pareto(rows: list[dict], sign: float) -> set[str]:
         if not dominated:
             keep.add(r["name"])
     return keep
+
+
+def _safe_config(c: dict) -> bool:
+    """Drop configs (e.g. from stored memory) with unsafe names or non-allowlisted params."""
+    try:
+        check_name(c["name"])
+        check_params(c["model"], dict(c.get("params") or {}))
+        return True
+    except (ValueError, KeyError):
+        return False
 
 
 class PipelineTools:
@@ -120,7 +130,7 @@ class PipelineTools:
         warm = memory.warm_start_configs(meta, task, path=self.memory_path)
         pool, seen = [], set()
         for c in warm + [c for c in space if c.get("family", c.get("model")) not in veto]:
-            if c["name"] not in seen and c.get("model") in ss.FAMILIES[task]:
+            if c.get("name") not in seen and c.get("model") in ss.FAMILIES[task] and _safe_config(c):
                 seen.add(c["name"])
                 pool.append(c)
         configs = pool[:RACE_CONFIGS]

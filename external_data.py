@@ -149,6 +149,8 @@ def _validate(url: str) -> tuple[str, str, str]:
         raise FetchError("URL has no host")
     if host in BLOCKED_NAMES or host.endswith(BLOCKED_SUFFIXES):
         raise FetchError(f"host {host!r} is an internal name")
+    if not _on_domain(host, tuple(SEARCH_DOMAINS)):
+        raise FetchError(f"host {host!r} is not an allowed dataset site; allowed: {SEARCH_DOMAINS}")
     try:
         literal = ipaddress.ip_address(host)
     except ValueError:

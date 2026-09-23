@@ -75,7 +75,7 @@ def _expect_fetch_error(url: str, dns=None, routes=None, **kw) -> str:
 
 
 def test_rejects_http():
-    assert "https" in _expect_fetch_error("http://example.org/x.csv")
+    assert "https" in _expect_fetch_error("http://www.openml.org/x.csv")
 
 
 def test_rejects_loopback_literal():
@@ -100,53 +100,53 @@ def test_rejects_internal_names():
 
 
 def test_rejects_host_resolving_to_metadata_ip():
-    _expect_fetch_error("https://evil.example.org/x.csv", dns={"evil.example.org": ["169.254.169.254"]})
+    _expect_fetch_error("https://evil.huggingface.co/x.csv", dns={"evil.huggingface.co": ["169.254.169.254"]})
 
 
 def test_rejects_if_any_address_private():
-    _expect_fetch_error("https://mixed.example.org/x.csv", dns={"mixed.example.org": [PUBLIC_IP, "192.168.1.1"]})
+    _expect_fetch_error("https://mixed.huggingface.co/x.csv", dns={"mixed.huggingface.co": [PUBLIC_IP, "192.168.1.1"]})
 
 
 def test_rejects_redirect_to_private_host():
-    dns = {"data.example.org": [PUBLIC_IP], "inner.example.org": ["10.1.2.3"]}
-    routes = {"data.example.org/x.csv": FakeResp(302, headers={"Location": "https://inner.example.org/x.csv"})}
-    _expect_fetch_error("https://data.example.org/x.csv", dns=dns, routes=routes)
+    dns = {"data.openml.org": [PUBLIC_IP], "inner.huggingface.co": ["10.1.2.3"]}
+    routes = {"data.openml.org/x.csv": FakeResp(302, headers={"Location": "https://inner.huggingface.co/x.csv"})}
+    _expect_fetch_error("https://data.openml.org/x.csv", dns=dns, routes=routes)
 
 
 def test_rejects_too_many_redirects():
-    dns = {"data.example.org": [PUBLIC_IP]}
-    routes = {"data.example.org/x.csv": FakeResp(302, headers={"Location": "/x.csv"})}
-    assert "redirect" in _expect_fetch_error("https://data.example.org/x.csv", dns=dns, routes=routes)
+    dns = {"data.openml.org": [PUBLIC_IP]}
+    routes = {"data.openml.org/x.csv": FakeResp(302, headers={"Location": "/x.csv"})}
+    assert "redirect" in _expect_fetch_error("https://data.openml.org/x.csv", dns=dns, routes=routes)
 
 
 def test_rejects_oversize_body():
-    dns = {"data.example.org": [PUBLIC_IP]}
+    dns = {"data.openml.org": [PUBLIC_IP]}
     body = b"a,b\n" + b"1,2\n" * 1000
-    routes = {"data.example.org/x.csv": FakeResp(200, body)}
-    assert "max_bytes" in _expect_fetch_error("https://data.example.org/x.csv", dns=dns, routes=routes, max_bytes=100)
+    routes = {"data.openml.org/x.csv": FakeResp(200, body)}
+    assert "max_bytes" in _expect_fetch_error("https://data.openml.org/x.csv", dns=dns, routes=routes, max_bytes=100)
 
 
 def test_rejects_oversize_content_length():
-    dns = {"data.example.org": [PUBLIC_IP]}
-    routes = {"data.example.org/x.csv": FakeResp(200, b"a\n1\n", {"Content-Length": "999999"})}
-    _expect_fetch_error("https://data.example.org/x.csv", dns=dns, routes=routes, max_bytes=100)
+    dns = {"data.openml.org": [PUBLIC_IP]}
+    routes = {"data.openml.org/x.csv": FakeResp(200, b"a\n1\n", {"Content-Length": "999999"})}
+    _expect_fetch_error("https://data.openml.org/x.csv", dns=dns, routes=routes, max_bytes=100)
 
 
 def test_rejects_pickle_extension():
-    for url in ["https://data.example.org/x.pkl", "https://data.example.org/m.joblib", "https://data.example.org/a.npy"]:
-        _expect_fetch_error(url, dns={"data.example.org": [PUBLIC_IP]})
+    for url in ["https://data.openml.org/x.pkl", "https://data.openml.org/m.joblib", "https://data.openml.org/a.npy"]:
+        _expect_fetch_error(url, dns={"data.openml.org": [PUBLIC_IP]})
 
 
 def test_rejects_non_443_port_and_userinfo():
-    _expect_fetch_error("https://data.example.org:8080/x.csv", dns={"data.example.org": [PUBLIC_IP]})
-    _expect_fetch_error("https://u:p@data.example.org/x.csv", dns={"data.example.org": [PUBLIC_IP]})
+    _expect_fetch_error("https://data.openml.org:8080/x.csv", dns={"data.openml.org": [PUBLIC_IP]})
+    _expect_fetch_error("https://u:p@data.openml.org/x.csv", dns={"data.openml.org": [PUBLIC_IP]})
 
 
 def test_rejects_gzip_bomb():
-    dns = {"data.example.org": [PUBLIC_IP]}
+    dns = {"data.openml.org": [PUBLIC_IP]}
     body = gzip.compress(b"a\n" + b"1\n" * 500_000)
-    routes = {"data.example.org/x.csv.gz": FakeResp(200, body)}
-    _expect_fetch_error("https://data.example.org/x.csv.gz", dns=dns, routes=routes, max_bytes=len(body) + 10)
+    routes = {"data.openml.org/x.csv.gz": FakeResp(200, body)}
+    _expect_fetch_error("https://data.openml.org/x.csv.gz", dns=dns, routes=routes, max_bytes=len(body) + 10)
 
 
 def _fetch(url: str, dns: dict, routes: dict, **kw):
@@ -161,33 +161,33 @@ def _fetch(url: str, dns: dict, routes: dict, **kw):
 
 
 def test_accepts_public_csv():
-    dns = {"data.example.org": [PUBLIC_IP]}
-    routes = {"data.example.org/x.csv?v=1": FakeResp(200, b"a,b\n1,2\n3,4\n")}
-    df, calls = _fetch("https://data.example.org/x.csv?v=1", dns, routes)
+    dns = {"data.openml.org": [PUBLIC_IP]}
+    routes = {"data.openml.org/x.csv?v=1": FakeResp(200, b"a,b\n1,2\n3,4\n")}
+    df, calls = _fetch("https://data.openml.org/x.csv?v=1", dns, routes)
     assert isinstance(df, pd.DataFrame) and df.shape == (2, 2) and list(df.columns) == ["a", "b"]
-    assert calls == [("data.example.org", PUBLIC_IP, "/x.csv?v=1")]
+    assert calls == [("data.openml.org", PUBLIC_IP, "/x.csv?v=1")]
 
 
 def test_follows_safe_redirect_and_caps_rows():
-    dns = {"data.example.org": [PUBLIC_IP], "cdn.example.org": [PUBLIC_IP]}
+    dns = {"data.openml.org": [PUBLIC_IP], "cdn.zenodo.org": [PUBLIC_IP]}
     body = gzip.compress(b"a\tb\n" + b"1\t2\n" * 50)
     routes = {
-        "data.example.org/x.tsv": FakeResp(301, headers={"Location": "https://cdn.example.org/y.tsv"}),
-        "cdn.example.org/y.tsv": FakeResp(200, b"a\tb\n" + b"1\t2\n" * 50),
-        "data.example.org/z.csv.gz": FakeResp(200, body),
+        "data.openml.org/x.tsv": FakeResp(301, headers={"Location": "https://cdn.zenodo.org/y.tsv"}),
+        "cdn.zenodo.org/y.tsv": FakeResp(200, b"a\tb\n" + b"1\t2\n" * 50),
+        "data.openml.org/z.csv.gz": FakeResp(200, body),
     }
-    df, calls = _fetch("https://data.example.org/x.tsv", dns, routes, max_rows=10)
-    assert df.shape == (10, 2) and [c[0] for c in calls] == ["data.example.org", "cdn.example.org"]
-    df, _ = _fetch("https://data.example.org/z.csv.gz", dns, routes)
+    df, calls = _fetch("https://data.openml.org/x.tsv", dns, routes, max_rows=10)
+    assert df.shape == (10, 2) and [c[0] for c in calls] == ["data.openml.org", "cdn.zenodo.org"]
+    df, _ = _fetch("https://data.openml.org/z.csv.gz", dns, routes)
     assert df.shape == (50, 1)  # tab separated but read as csv: one column
 
 
 def test_accepts_parquet():
     buf = io.BytesIO()
     pd.DataFrame({"a": range(20), "b": list("xy") * 10}).to_parquet(buf)
-    dns = {"data.example.org": [PUBLIC_IP]}
-    routes = {"data.example.org/x.parquet": FakeResp(200, buf.getvalue())}
-    df, _ = _fetch("https://data.example.org/x.parquet", dns, routes, max_rows=5)
+    dns = {"data.openml.org": [PUBLIC_IP]}
+    routes = {"data.openml.org/x.parquet": FakeResp(200, buf.getvalue())}
+    df, _ = _fetch("https://data.openml.org/x.parquet", dns, routes, max_rows=5)
     assert df.shape == (5, 2) and df["a"].tolist() == [0, 1, 2, 3, 4]
 
 
@@ -199,8 +199,8 @@ def test_github_blob_to_raw():
 
 def test_find_file_links_extracts():
     page = (
-        "See https://github.com/o/r/blob/main/a.csv and https://example.org/b.tsv?raw=1, "
-        "also http://insecure.org/c.csv and https://example.org/model.pkl and https://example.org/d.csv.gz."
+        "See https://github.com/o/r/blob/main/a.csv and https://www.openml.org/b.tsv?raw=1, "
+        "also http://insecure.org/c.csv and https://www.openml.org/model.pkl and https://www.openml.org/d.csv.gz."
     )
 
     class FakeClient:
@@ -211,11 +211,11 @@ def test_find_file_links_extracts():
             return {"results": [{"url": url, "raw_content": page}]}
 
     with mock.patch.dict(os.environ, {"TAVILY_API_KEY": "k"}), mock.patch.object(ed, "TavilyClient", FakeClient):
-        links = ed.find_file_links("https://example.org/dataset-page")
+        links = ed.find_file_links("https://www.openml.org/dataset-page")
     assert links == [
         "https://raw.githubusercontent.com/o/r/main/a.csv",
-        "https://example.org/b.tsv?raw=1",
-        "https://example.org/d.csv.gz",
+        "https://www.openml.org/b.tsv?raw=1",
+        "https://www.openml.org/d.csv.gz",
     ]
 
 

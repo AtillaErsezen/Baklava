@@ -1,5 +1,5 @@
 """
-ML Factory — Modal training backend.
+ML Factory: Modal training backend.
 
   modal deploy modal_train.py                                        # agent calls the deployed functions
   modal run modal_train.py --csv data/titanic.csv --target Survived  # smoke test WITHOUT the agent (do this first!)
@@ -34,6 +34,52 @@ GPU_MODELS = {"tabicl"}
 MODEL_MENU = {
     t: [m for (tt, m) in ESTIMATORS if tt == t] for t in ("classification", "regression")
 }
+
+NAME_RE = r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}"  # candidate and dataset names become file names
+MAX_ROUNDS_PARAM = 5000  # cap on n_estimators / iterations / max_iter (resource guard)
+_ITER_KEYS = ("n_estimators", "iterations", "max_iter")
+# Constructor kwargs the LLM, the search space or stored memory may set, per model. Anything else
+# (e.g. LightGBM machines/tree_learner, CatBoost train_dir, callbacks, file paths) is rejected.
+ALLOWED_PARAMS = {
+    "logreg": {"C", "class_weight", "penalty", "solver", "l1_ratio", "max_iter", "fit_intercept"},
+    "ridge": {"alpha", "fit_intercept"},
+    "random_forest": {"n_estimators", "max_depth", "max_features", "min_samples_leaf", "min_samples_split",
+                      "class_weight", "bootstrap", "criterion", "max_samples"},
+    "lightgbm": {"learning_rate", "num_leaves", "min_child_samples", "colsample_bytree", "subsample",
+                 "subsample_freq", "reg_lambda", "reg_alpha", "n_estimators", "max_depth", "class_weight",
+                 "extra_trees", "scale_pos_weight", "min_split_gain", "max_bin"},
+    "xgboost": {"learning_rate", "max_depth", "min_child_weight", "colsample_bytree", "colsample_bylevel",
+                "colsample_bynode", "subsample", "reg_lambda", "reg_alpha", "n_estimators", "grow_policy",
+                "max_leaves", "gamma", "scale_pos_weight", "max_bin"},
+    "catboost": {"depth", "learning_rate", "l2_leaf_reg", "iterations", "random_strength", "auto_class_weights",
+                 "boosting_type", "bootstrap_type", "colsample_bylevel", "grow_policy", "leaf_estimation_iterations",
+                 "max_bin", "max_ctr_complexity", "model_size_reg", "one_hot_max_size", "subsample"},
+    "mlp": {"hidden_layer_sizes", "alpha", "learning_rate_init", "activation", "batch_size", "max_iter",
+            "early_stopping"},
+    "tabicl": {"n_estimators"},
+}
+
+
+def check_name(name) -> str:
+    """Reject names that could escape a directory when used in a file path."""
+    import re
+
+    if not isinstance(name, str) or not re.fullmatch(NAME_RE, name) or name in (".", ".."):
+        raise ValueError(f"bad name {name!r}: 1-64 of letters, digits, _ . -, not starting with '.'")
+    return name
+
+
+def check_params(model: str, params: dict) -> dict:
+    """Allowlist constructor kwargs per model and bound iteration counts."""
+    bad = sorted(set(params) - ALLOWED_PARAMS.get(model, set()))
+    if bad:
+        raise ValueError(f"params {bad} are not allowed for {model}; allowed: {sorted(ALLOWED_PARAMS.get(model, ()))}")
+    for k in _ITER_KEYS:
+        v = params.get(k)
+        if v is not None and (not isinstance(v, (int, float)) or v > MAX_ROUNDS_PARAM):
+            raise ValueError(f"{k}={v!r} exceeds the cap of {MAX_ROUNDS_PARAM}")
+    return params
+
 
 app = modal.App(APP_NAME)
 vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
@@ -83,8 +129,7 @@ def upload_frame(df, name: str) -> str:
     import re
     import tempfile
 
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name) or name.startswith("."):
-        raise ValueError(f"bad dataset name {name!r}: letters, digits, _ . - only")
+    check_name(name)
     df = df.copy()
     for c in df.columns:  # mixed-type object columns break pyarrow
         if df[c].dtype == object:
@@ -214,7 +259,9 @@ def _build_pipeline(X, spec):
         ("cat", Pipeline([("impute", SimpleImputer(strategy="most_frequent")), ("encode", enc)]), cat),
     ])
     mod, cls, defaults = ESTIMATORS[(task, model)]
-    est = getattr(importlib.import_module(mod), cls)(**{**defaults, **(spec.get("params") or {})})
+    check_name(spec.get("name", "candidate"))
+    params = check_params(model, dict(spec.get("params") or {}))
+    est = getattr(importlib.import_module(mod), cls)(**{**defaults, **params})
     return Pipeline([("prep", pre), ("model", est)])
 
 
