@@ -113,6 +113,30 @@ def test_model_that_stops_early_is_nudged_to_continue():
     assert state["stalled"] and run.report, "run ended at the stall instead of finishing"
 
 
+
+def test_sorted_datetime_column_gives_a_time_split(tmp="runs/_time.csv"):
+    import pandas as pd
+    rng = np.random.default_rng(0)
+    n = 600
+    pd.DataFrame({"when": pd.date_range("2024-01-01", periods=n, freq="D"),
+                  "x": rng.normal(size=n), "y": rng.integers(0, 2, n)}).to_csv(tmp, index=False)
+    agent.modal.Function.from_name = lambda app, name: FakeFn(name)
+    run = agent.FactoryRun(tmp, "y", provider="scripted")
+    assert run.time_column == "when"
+    assert run.hidden_df["when"].min() > run.dev_df["when"].max()  # hidden = the latest rows
+
+
+def test_hidden_rows_repeating_dev_rows_are_flagged(tmp="runs/_dup.csv"):
+    import pandas as pd
+    rng = np.random.default_rng(1)
+    base = pd.DataFrame({"x": rng.normal(size=150), "z": rng.integers(0, 9, 150), "y": rng.integers(0, 2, 150)})
+    pd.concat([base] * 4, ignore_index=True).to_csv(tmp, index=False)  # every record appears 4 times
+    agent.modal.Function.from_name = lambda app, name: FakeFn(name)
+    run = agent.FactoryRun(tmp, "y", provider="scripted")
+    dup = [f for f in run.diag["findings"] if f["check"] == "cross_split_duplicates"]
+    assert dup and dup[0]["severity"] >= 2
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -75,10 +75,16 @@ class PipelineTools:
     def setup_pipeline(self, task: str, purpose: str | None) -> None:
         """Lock the hidden split first, then diagnose the dev split only."""
         self.task, self.purpose = task, purpose
-        idx = sampling.split_three(self.df, self.target, task)
+        self.time_column = sampling.sorted_time_column(self.df, self.target)
+        idx = sampling.split_three(self.df, self.target, task, time_column=self.time_column)
         self.dev_df, self.val_df, self.hidden_df = (self.df.iloc[idx[k]] for k in ("dev", "search_val", "hidden"))
-        self.ctx = dg.make_context(self.dev_df.reset_index(drop=True), self.target, task)
+        self.ctx = dg.make_context(self.dev_df.reset_index(drop=True), self.target, task, time_column=self.time_column)
         self.diag = dg.run_all(self.ctx)
+        dups = sampling.cross_split_duplicates(self.dev_df, self.hidden_df, self.target)
+        if dups:
+            self.diag["findings"].insert(0, {"check": "cross_split_duplicates", "severity": 2,
+                                             "finding": f"{dups} hidden rows repeat a dev row exactly; hidden scores "
+                                                        "may be optimistic. Deduplicate before trusting them."})
         self.dev_path = self.hidden_path = None
         self.search = self.confirmed = self.export = None
         self.memory_path = None
@@ -108,7 +114,8 @@ class PipelineTools:
     def tool_diag_summary(self, inp):
         """Ranked findings + meta-features from the 33-check battery (precomputed, free)."""
         out = {"findings": self.diag["findings"], "meta": {k: _r(v, 3) for k, v in self.diag["meta"].items()},
-               "rows": {"dev": len(self.dev_df), "search_val": len(self.val_df), "hidden_locked": len(self.hidden_df)}}
+               "rows": {"dev": len(self.dev_df), "search_val": len(self.val_df), "hidden_locked": len(self.hidden_df)},
+               "split": f"time: latest 20% by {self.time_column}" if self.time_column else "random, stratified"}
         self.emit("diagnostics", {"findings": out["findings"], "rows": out["rows"]})
         if inp.get("response_format") == "detailed":
             out["catalog"] = dg.catalog()

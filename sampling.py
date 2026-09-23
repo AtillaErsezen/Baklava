@@ -46,6 +46,23 @@ def _split(idx: np.ndarray, frac: float, labels: np.ndarray, seed: int) -> tuple
         return train_test_split(idx, test_size=frac, random_state=seed)
 
 
+def sorted_time_column(df: pd.DataFrame, target: str) -> str | None:
+    """First datetime column (not the target) already in increasing order: time-ordered data,
+    so the hidden split must be the latest rows. Ported from Atilla's main (cf22121)."""
+    for c in df.columns:
+        s = df[c]
+        if c != target and pd.api.types.is_datetime64_any_dtype(s) and s.nunique() > 1 and s.is_monotonic_increasing:
+            return c
+    return None
+
+
+def cross_split_duplicates(dev: pd.DataFrame, hidden: pd.DataFrame, target: str) -> int:
+    """Hidden rows whose features exactly repeat a dev row (memorization leak). Ported from cf22121."""
+    cols = [c for c in dev.columns if c != target]
+    seen = set(pd.util.hash_pandas_object(dev[cols], index=False))
+    return int(sum(h in seen for h in pd.util.hash_pandas_object(hidden[cols], index=False)))
+
+
 def split_three(df: pd.DataFrame, target: str, task: str, time_column: str | None = None, seed: int = 42,
                 fractions: tuple[float, float, float] = (0.7, 0.1, 0.2)) -> dict[str, np.ndarray]:
     """Disjoint positional index arrays dev / search_val / hidden covering every row."""
