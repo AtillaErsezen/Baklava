@@ -16,7 +16,7 @@ PUBLIC = {
         "target": "Churn", "task": "classification", "metric": "roc_auc",
         "purpose": "Rank our customers by how likely they are to cancel next month so the retention team calls the "
                    "riskiest first. The team has to explain each call, so readable reasons matter.",
-        "expect": {"finding": "mixed_types", "must_drop": ["customerID"], "cv": "kfold"},
+        "expect": {"finding": "id_like", "must_drop": ["customerID"], "cv": "kfold"},
         "source": "IBM Telco Customer Churn sample (IBM/telco-customer-churn-on-icp4d on GitHub)",
         "license": "IBM sample data, Apache-2.0 repository",
     },
@@ -53,7 +53,7 @@ PUBLIC = {
         "target": "income", "task": "classification", "metric": "roc_auc",
         "purpose": "Predict whether a person earns more than 50K a year from census answers, to audit a "
                    "benefits eligibility rule.",
-        "expect": {"finding": "imbalance", "must_drop": [], "cv": "kfold"},
+        "expect": {"finding": "missing_placeholders", "must_drop": [], "cv": "kfold"},
         "source": "UCI Adult / Census Income (Kohavi 1996), scikit-learn/adult-census-income on Hugging Face",
         "license": "UCI, CC BY 4.0",
     },

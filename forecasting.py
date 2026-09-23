@@ -185,6 +185,8 @@ def _calendar(t: pd.Series, p: dict) -> dict:
     cal = {"cal_dow": t.dt.dayofweek, "cal_month": t.dt.month, "cal_week": t.dt.isocalendar().week.astype(int),
            "cal_quarter": t.dt.quarter, "cal_is_month_end": t.dt.is_month_end.astype(int),
            "cal_doy_sin": np.sin(2 * np.pi * doy / 365.25), "cal_doy_cos": np.cos(2 * np.pi * doy / 365.25)}
+    if p["step_seconds"] >= 7 * 86400:  # weekly or coarser rows share one weekday: a constant column
+        del cal["cal_dow"]
     if p["sub_daily"]:
         cal["cal_hour"] = t.dt.hour
     cal["time_index"] = (t - pd.Timestamp(p["t0"])).dt.total_seconds() / p["step_seconds"]

@@ -129,6 +129,18 @@ def test_monthly_series_named_month():
     assert fc.leakage_audit(frame, "price", "month", raw=raw, manifest=manifest) == []
 
 
+def test_weekly_series_has_no_constant_day_of_week():
+    """Walmart: weekly rows all fall on a Friday, so cal_dow was a constant column the battery told users to drop."""
+    rng = np.random.default_rng(2)
+    t = pd.date_range("2010-02-05", periods=140, freq="7D")
+    raw = pd.DataFrame({"Date": t, "sales": 100 + 10 * np.sin(2 * np.pi * np.arange(140) / 52) + rng.normal(0, 1, 140)})
+    frame, manifest = fc.make_supervised(raw, "sales", "Date", [])
+    assert "cal_dow" not in frame
+    feats = frame.drop(columns=["sales", "Date"])
+    assert (feats.nunique() > 1).all(), list(feats.columns[feats.nunique() <= 1])
+    assert "cal_dow" in _supervised()[1]  # daily data keeps it
+
+
 def test_drifting_sales_end_to_end():
     if not os.path.exists(DRIFTING):
         subprocess.run([sys.executable, os.path.join(HERE, "evals", "make_golden.py")], check=True)

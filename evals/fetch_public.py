@@ -5,23 +5,22 @@ Every download goes through external_data.safe_fetch, so the https-only, allowli
 size-cap guards apply. Files already on disk are skipped. Data is saved as fetched, traps included.
 
 Traps worth knowing (checked on the fetched files and with the diagnostics battery on the dev split):
-- telco_churn: TotalCharges is a blank string for the 11 tenure-0 customers, so the column loads as text. The
-  battery reads it as a ~6500-level categorical (mixed_types, high_cardinality) and raises a false severity 3
-  n_over_p ("0.5 rows per feature"). customerID is a unique id.
+- telco_churn: TotalCharges is a blank string for the 11 tenure-0 customers; modal_train.load_local casts it to
+  numbers with 11 NaN. customerID is a unique id (id_like), left out of n_over_p's feature count.
 - titanic: PassengerId and Name are unique per row. Cabin is 77% missing and its missingness predicts survival.
-  Name, Ticket and Cabin also trip the false n_over_p.
+  n_over_p leaves out the ids and caps Ticket and Cabin at the one-hot width the pipeline uses.
 - california_housing: rows are ordered by location, so adversarial_drift (severity 3) and autocorr_target fire
   with no time axis at all; kfold is still right. The target is capped at 500001 (965 censored rows).
 - bank_marketing: duration (call length) is only known after the call and nearly decides y; UCI says to drop it
   for a real model. No check flags it, so dropping it is pure judgment. id is a row id.
-- adult_income: missing values are the string "?" (workclass, occupation, native.country), so the missing
-  checks stay silent. Rows are ordered (target lag-1 autocorrelation 0.27).
+- adult_income: missing values are the string "?" (workclass, occupation, native.country); missing_pattern
+  stays silent, missing_placeholders names them. Rows are ordered (target lag-1 autocorrelation 0.27).
 - credit_default: ID is a row id. EDUCATION has undocumented codes 0, 5, 6; the PAY columns skip PAY_1.
-- bike_sharing_hourly: casual + registered = cnt on every row, a perfect leak. Only registered gets flagged
-  (leakage, severity 2); casual does not. instant is a row index; dteday is sorted, so the split is by time.
-- walmart_sales: Date is dd-mm-yyyy. modal_train.load_local parses it with format="mixed", which reads
-  05-02-2010 as May 2 but 19-02-2010 as Feb 19, so the dates come out scrambled and no time split happens.
-  Rows are grouped by Store, which drives adversarial_drift.
+- bike_sharing_hourly: casual + registered = cnt on every row, a perfect leak. leakage names the pair
+  (registered + casual, severity 3) from an exact least-squares fit. instant is a row index; dteday is sorted,
+  so the split is by time.
+- walmart_sales: Date is dd-mm-yyyy; modal_train.load_local detects day-first from values like 19-02-2010.
+  Weekly rows all fall on a Friday. Rows are grouped by Store, which drives adversarial_drift.
 - pima_diabetes: zeros mean missing in Insulin (374), SkinThickness (227), BloodPressure (35), BMI (11) and
   Glucose (5). Only mad_outliers notices anything.
 - card_fraud_sample: a biased sample. All 897 legit rows come from the first 718 seconds, the 51 frauds from

@@ -45,6 +45,18 @@ def test_split_three_regression():
     assert len(np.unique(np.concatenate(list(sp.values())))) == 2000
 
 
+
+def test_split_three_singleton_class_keeps_other_strata():
+    """One row of a third class makes stratify raise; the rest must stay stratified, not go fully random."""
+    rng = np.random.default_rng(5)
+    y = np.array(["no"] * 980 + ["yes"] * 19 + ["odd"], dtype=object)
+    df = pd.DataFrame({"x": rng.normal(size=1000), "y": y})
+    sp = s.split_three(df, "y", "classification")
+    assert sorted(np.concatenate(list(sp.values())).tolist()) == list(range(1000))
+    for k, want in (("hidden", 4), ("search_val", 2), ("dev", 13)):
+        got = int((df["y"].iloc[sp[k]] == "yes").sum())
+        assert abs(got - want) <= 1, (k, got)
+
 def test_hoeffding_n():
     # ceil(ln(2*1000/0.05) / (2*0.02^2)) = ceil(10.5966 / 0.0008) = ceil(13245.7)
     assert s.hoeffding_n(0.02, 0.05, 1000) == math.ceil(math.log(40000) / 0.0008) == 13_246

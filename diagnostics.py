@@ -9,6 +9,7 @@ The LLM never sees raw data, only compact findings. Add a check by writing a dec
 
 Severity: 0 fine, 1 note, 2 should act, 3 must act.
 """
+import itertools
 import math
 import warnings
 from dataclasses import dataclass
@@ -33,6 +34,10 @@ MAX_SAMPLE = 10_000
 MODEL_ROWS = 2_000     # landmarkers
 SCORE_ROWS = 3_000     # single-feature scores, knn, drift
 MAX_FINDINGS = 15
+PLACEHOLDERS = {"?", "", "na", "n/a", "nan", "null", "none", "-"}  # text that stands for a missing value
+ONEHOT_CAP = 20        # modal_train one-hot max_categories: no categorical adds more columns than this
+LEAK_PAIR_TOP = 10     # numeric features (by |corr| with the target) tried in pairs for an exact linear leak
+MIN_CLASS_ROWS = 5     # stratified 5-fold CV needs every class in every fold
 
 
 @dataclass(frozen=True)
@@ -317,6 +322,21 @@ def mixed_types(ctx: Context, columns=None) -> dict:
     return _out(_top(v), sev, msg)
 
 
+@diagnostic("missing_placeholders", "quality", "text columns using '?', '', 'NA', 'null', '-' as a missing value")
+def missing_placeholders(ctx: Context, columns=None) -> dict:
+    v = {}
+    for c in _cat(ctx, columns):
+        s = ctx.X[c].dropna().astype(str).str.strip().str.lower()
+        r = float(s.isin(PLACEHOLDERS).mean()) if len(s) else 0.0
+        if r > 0:
+            v[c] = r
+    worst = max(v.values(), default=0.0)
+    sev = 2 if worst > 0.01 else 1 if v else 0
+    msg = f"Placeholder strings like '?' stand for missing values in {_names(_top(v), 5)}; treat them as missing." \
+        if v else "No missing-value placeholder strings."
+    return _out(_top(v), sev, msg)
+
+
 @diagnostic("mad_outliers", "quality", "fraction of values with robust (MAD) z-score > 3.5 per numeric column")
 def mad_outliers(ctx: Context, columns=None) -> dict:
     v = {}
@@ -339,7 +359,8 @@ def _dt_share(s: pd.Series) -> float:
         return 0.0
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return float(pd.to_datetime(s, errors="coerce", format="mixed").notna().mean())
+        parsed = pd.to_datetime(s, errors="coerce", format="mixed").notna()
+    return float((parsed & s.str.contains(r"\d")).mean())  # month names like "may" parse as year 1: not dates
 
 
 @diagnostic("datetime_like", "quality", "string columns that parse as dates, plus native datetime columns")
@@ -412,6 +433,18 @@ def label_noise_knn(ctx: Context, columns=None) -> dict:
     return _out({"rate": rate, "chance": base}, sev, msg)
 
 
+@diagnostic("rare_classes", "target", "classes with fewer than 5 rows, too few for stratified 5-fold CV, classification only")
+def rare_classes(ctx: Context, columns=None) -> dict:
+    if not ctx.is_cls:
+        return _out(None, 0, "Not applicable to regression.")
+    counts = ctx.df[ctx.target].dropna().astype(str).value_counts()
+    rare = {k: int(v) for k, v in counts.items() if v < MIN_CLASS_ROWS}
+    msg = (f"Classes {list(rare)[:5]} have fewer than {MIN_CLASS_ROWS} rows; cross-validation leaves them out of "
+           "training and scoring. Merge them into a related class or collect more rows.") if rare else \
+        "Every class has enough rows for stratified CV."
+    return _out(rare, 2 if rare else 0, msg)
+
+
 @diagnostic("heteroscedasticity_bp", "target", "Breusch-Pagan test on OLS residuals, regression only")
 def heteroscedasticity_bp(ctx: Context, columns=None) -> dict:
     if ctx.is_cls:
@@ -465,10 +498,33 @@ def single_feature_score(ctx: Context, columns=None) -> dict:
     return _out(v, 0, f"Best single features: {_names(v)}.")
 
 
-@diagnostic("leakage", "signal", "any single feature scoring >= 0.98 alone (AUC or R2) is probable target leakage")
+def _linear_leaks(ctx: Context, columns=None) -> dict[str, float]:
+    """Regression only: one numeric feature, or a pair (e.g. casual + registered = cnt), whose least-squares
+    fit reproduces the target with R2 > 0.999 on the scoring rows. Pairs come from the LEAK_PAIR_TOP features
+    most correlated with the target, so the cost stays at 45 tiny fits."""
+    if ctx.is_cls:
+        return {}
+    idx = _rows(ctx, SCORE_ROWS)
+    e, y = _encn(ctx, _num(ctx, columns)).iloc[idx], ctx.yc[idx]
+    if e.shape[1] == 0 or np.std(y) == 0:
+        return {}
+    top = list(e.corrwith(pd.Series(y, index=e.index)).abs().fillna(0).sort_values(ascending=False).index[:LEAK_PAIR_TOP])
+
+    def r2(cols) -> float:
+        Z = np.column_stack([np.ones(len(e)), *(e[c].to_numpy() for c in cols)])
+        resid = y - Z @ np.linalg.lstsq(Z, y, rcond=None)[0]
+        return float(1 - resid.var() / y.var())
+    out = {c: r2([c]) for c in top}
+    out = {c: v for c, v in out.items() if v > 0.999}
+    rest = [c for c in top if c not in out]
+    out.update({f"{a} + {b}": v for a, b in itertools.combinations(rest, 2) if (v := r2([a, b])) > 0.999})
+    return out
+
+
+@diagnostic("leakage", "signal", "any single feature scoring >= 0.98 alone (AUC or R2), or 1-2 features reproducing a regression target linearly (R2 > 0.999), is probable target leakage")
 def leakage(ctx: Context, columns=None) -> dict:
     s = {c: v for c, v in ctx.single_scores.items() if columns is None or c in columns}
-    leaks = _top({c: v for c, v in s.items() if v >= 0.98})
+    leaks = {**_top({c: v for c, v in s.items() if v >= 0.98}), **_linear_leaks(ctx, columns)}
     sus = _top({c: v for c, v in s.items() if 0.9 <= v < 0.98})
     if leaks:
         return _out(leaks, 3, f"Probable leakage: {_names(leaks)} predict the target alone; drop them.")
@@ -480,7 +536,10 @@ def leakage(ctx: Context, columns=None) -> dict:
 # ---------- structure ----------
 
 def _onehot_p(ctx: Context) -> int:
-    return int(sum(max(ctx.X[c].nunique(), 1) - 1 if _is_cat(ctx.X[c]) else 1 for c in ctx.X.columns))
+    """Encoded width: ids excluded, a categorical adds at most ONEHOT_CAP columns (the pipeline's cap)."""
+    ids = set(_id_cols(ctx))
+    return int(sum(min(max(ctx.X[c].nunique(), 1) - 1, ONEHOT_CAP) if _is_cat(ctx.X[c]) else 1
+                   for c in ctx.X.columns if c not in ids))
 
 
 @diagnostic("n_over_p", "structure", "rows per (one-hot estimated) feature")

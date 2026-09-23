@@ -39,9 +39,12 @@ def _strata(df: pd.DataFrame, target: str, task: str, time_column: str | None = 
 
 
 def _split(idx: np.ndarray, frac: float, labels: np.ndarray, seed: int) -> tuple[np.ndarray, np.ndarray]:
-    """Stratified split of idx; falls back to plain random if a class is too small."""
+    """Stratified split of idx. Classes too small to stratify (under 2 rows) join the largest class so the
+    rest stay stratified; plain random only if that still fails."""
+    counts = pd.Series(labels).value_counts()
+    merged = np.where(pd.Series(labels).map(counts).to_numpy() < 2, counts.index[0], labels)
     try:
-        return train_test_split(idx, test_size=frac, random_state=seed, stratify=labels)
+        return train_test_split(idx, test_size=frac, random_state=seed, stratify=merged)
     except ValueError:
         return train_test_split(idx, test_size=frac, random_state=seed)
 

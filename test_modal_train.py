@@ -232,6 +232,43 @@ def test_numeric_columns_with_blank_strings_become_numeric(tmp="runs/_blank.csv"
     assert not pd.api.types.is_numeric_dtype(df["plan"])  # real text stays text
 
 
+def test_text_values_are_stripped(tmp="runs/_ws.csv"):
+    """'yes' and ' yes ' are one class, not two."""
+    import pandas as pd
+    pd.DataFrame({"plan": ["a ", "a", " b", "b"] * 30, "y": ["yes", " yes ", "no", "no  "] * 30}).to_csv(tmp, index=False)
+    df = mt.load_local(tmp)
+    assert sorted(df["y"].unique()) == ["no", "yes"] and sorted(df["plan"].unique()) == ["a", "b"]
+
+
+def test_rare_class_rows_leave_the_cv(tmp_path=None):
+    """A 3-row class cannot sit in all 5 stratified folds: multiclass ROC AUC (and XGBoost labels) then fail
+    every fit. Its rows are dropped before CV, fit and predict; two classes must remain for that."""
+    import os
+    import tempfile
+    import types
+
+    tmp = str(tmp_path or tempfile.mkdtemp())
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame({"x": rng.normal(size=600), "c": rng.choice(list("pq"), 600)})
+    df["y"] = np.where(df["x"] > 0.4, "hi", np.where(df["x"] < -0.4, "lo", "mid")).astype(object)
+    df.loc[:2, "y"] = "rare"
+    os.makedirs(f"{tmp}/datasets")
+    df.to_parquet(f"{tmp}/datasets/d.parquet", index=False)
+    saved_vol, saved_dir = mt.vol, mt.DATA_DIR
+    mt.vol, mt.DATA_DIR = types.SimpleNamespace(reload=lambda: None), tmp
+    spec = {"name": "rf", "task": "classification", "model": "random_forest", "target": "y",
+            "dataset_path": "/datasets/d.parquet", "params": {"n_estimators": 20}}
+    try:
+        X, y, classes = mt._load_xy(spec)
+        r = mt._train(spec)
+    finally:
+        mt.vol, mt.DATA_DIR = saved_vol, saved_dir
+    assert classes == ["hi", "lo", "mid"] and len(X) == len(y) == 597
+    assert r["ok"], r.get("error")
+    two = pd.DataFrame({"y": ["a"] * 50 + ["b"] * 3})
+    assert len(mt._drop_rare_classes(two, "y", 5)) == 53  # one class left would be worse: keep all
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

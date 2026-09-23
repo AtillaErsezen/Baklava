@@ -101,6 +101,59 @@ def test_high_cardinality_alone_is_not_drift():
     assert d.run_check("adversarial_drift", ctx)["severity"] == 0
 
 
+def test_missing_placeholders_named():
+    """Adult income style: '?' (and blanks, 'NA', 'null', '-') stand for missing in text columns."""
+    df = _cls_frame(1000)
+    df["work"] = RNG.choice(["gov", "private", " ?"], len(df), p=[0.45, 0.45, 0.1])
+    df["country"] = RNG.choice(["us", "mx", "-", "null"], len(df), p=[0.8, 0.1, 0.05, 0.05])
+    df["clean"] = RNG.choice(["a", "b"], len(df))
+    r = d.run_check("missing_placeholders", d.make_context(df, "y", "classification"))
+    assert r["severity"] >= 2 and set(r["value"]) == {"work", "country"}, r
+    assert "work" in r["finding"] and "country" in r["finding"], r
+
+
+def test_n_over_p_ignores_ids_and_caps_onehot():
+    """Telco/Titanic: a unique customer id or a 600-level ticket column is not 600 one-hot features."""
+    df = _cls_frame(700)
+    df["customer_id"] = [f"C{i:05d}" for i in range(len(df))]
+    df["ticket"] = RNG.integers(0, 600, len(df)).astype(str)
+    r = d.run_check("n_over_p", d.make_context(df, "y", "classification"))
+    assert r["severity"] == 0, r
+
+
+def test_month_names_are_not_dates():
+    """Bank marketing: 'may', 'jun' parse as year-1 dates in pandas but are a categorical."""
+    df = _cls_frame(500)
+    df["month"] = RNG.choice(["jan", "may", "jun", "oct"], len(df))
+    ctx = d.make_context(df, "y", "classification")
+    assert d.run_check("datetime_like", ctx)["severity"] == 0
+    assert d.run_check("time_order", ctx)["severity"] == 0
+
+
+def test_leakage_sum_of_two_columns():
+    """Bike sharing: casual + registered = cnt; the two parts together are the target."""
+    n = 2000
+    casual = RNG.poisson(30, n) * RNG.integers(0, 3, n)
+    registered = RNG.poisson(150, n) + 40 * RNG.integers(0, 4, n)
+    df = pd.DataFrame({"temp": RNG.normal(size=n), "hour": RNG.integers(0, 24, n), "casual": casual,
+                       "registered": registered, "cnt": casual + registered})
+    r = d.run_check("leakage", d.make_context(df, "cnt", "regression"))
+    assert r["severity"] == 3, r
+    assert "casual" in r["finding"] and "registered" in r["finding"], r
+    clean = df.assign(cnt=df["casual"] + df["registered"] + RNG.normal(0, 40, n))
+    r = d.run_check("leakage", d.make_context(clean, "cnt", "regression"))
+    assert "casual" not in r["finding"], r
+
+
+def test_rare_classes_flagged():
+    df = _cls_frame(1000)
+    df["y"] = df["y"].astype(str)
+    df.loc[:2, "y"] = "rare"
+    r = d.run_check("rare_classes", d.make_context(df, "y", "classification"))
+    assert r["severity"] >= 2 and r["value"] == {"rare": 3}, r
+    assert d.run_check("rare_classes", d.make_context(_cls_frame(500), "y", "classification"))["severity"] == 0
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

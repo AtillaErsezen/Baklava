@@ -130,6 +130,7 @@ def load_local(path: str):
     for c in df.columns:
         if not (df[c].dtype == object or pd.api.types.is_string_dtype(df[c])):
             continue
+        df[c] = df[c].map(lambda v: v.strip() if isinstance(v, str) else v)  # " yes" and "yes" are one value
         num = pd.to_numeric(df[c].astype(str).str.strip().replace("", None), errors="coerce")
         filled = df[c].astype(str).str.strip().replace("", None).notna()
         if filled.any() and num[filled].notna().mean() >= 0.95:  # e.g. Telco TotalCharges: numbers plus " "
@@ -252,6 +253,8 @@ def _load_xy(spec):
     if spec.get("train_rows") and spec["train_rows"] < len(df):
         idx = _subsample_index(df[target].values, spec["task"], int(spec["train_rows"]), spec.get("subsample_seed", SEED))
         df = df.iloc[idx].reset_index(drop=True)
+    if spec["task"] == "classification":
+        df = _drop_rare_classes(df, target, spec.get("cv_folds", 5))
     y = df[target]
     X = _clean(df.drop(columns=[target, *spec.get("drop_columns", [])], errors="ignore"))
     classes = None
@@ -264,6 +267,15 @@ def _load_xy(spec):
     else:
         y = y.astype(float).values
     return X, y, classes
+
+
+def _drop_rare_classes(df, target, k):
+    """Rows of classes with fewer than k rows, which stratified k-fold cannot put in every fold: those folds
+    then fail every fit (multiclass ROC AUC, XGBoost's label check). Kept when under 2 classes would remain.
+    The diagnostics check rare_classes tells the user."""
+    label = df[target].astype(str)
+    counts = label.value_counts()
+    return df[label.map(counts).to_numpy() >= k] if (counts >= k).sum() >= 2 else df
 
 
 def _build_pipeline(X, spec):
