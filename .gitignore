@@ -5,3 +5,4 @@ runs/
 .env.*
 evals/data/
 evals/public/
+!.env.example

@@ -16,6 +16,9 @@ SEED = 42
 # ML_FACTORY_GPU=0 deploys without GPU functions (e.g. no payment method on the workspace): tabicl leaves
 # the menu and the *_gpu functions run on the CPU image so their names still resolve.
 GPU_ENABLED = os.environ.get("ML_FACTORY_GPU", "1") == "1"
+# One race fans out hundreds of CV jobs; cap the containers per function so a single run cannot take the whole
+# workspace (Modal allows about 100 containers per workspace, shared with every other app and teammate).
+MAX_CONTAINERS = int(os.environ.get("ML_FACTORY_MAX_CONTAINERS", "40"))
 
 # (task, model) -> (module, class, default kwargs). Claude's params override the defaults.
 ESTIMATORS = {
@@ -109,7 +112,8 @@ image = (
     # pandas/pyarrow must match the local venv: parquet is written locally, read here
     # ponytail: ML libs unpinned, pin to whatever the first green smoke test resolves
     .uv_pip_install("pandas==3.0.6", "pyarrow==25.0.1", "scikit-learn", "lightgbm", "xgboost", "catboost", "joblib")
-    .env({"ML_FACTORY_GPU": "1" if GPU_ENABLED else "0"})  # same menu inside containers
+    .env({"ML_FACTORY_GPU": "1" if GPU_ENABLED else "0",  # same menu and limits inside containers
+          "ML_FACTORY_MAX_CONTAINERS": str(MAX_CONTAINERS)})
 )
 # ponytail: tabicl pulls its checkpoint from Hugging Face on every cold start, cache it on the volume if that hurts
 gpu_image = image.uv_pip_install("torch", "tabicl")
@@ -474,7 +478,7 @@ def _train(spec):
                 "trace": traceback.format_exc()[-1500:]}
 
 
-@app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1200)
+@app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1200, max_containers=MAX_CONTAINERS)
 def train_candidate(spec: dict) -> dict:
     """Cross-validate ONE candidate. Never raises: errors come back so the agent can react.
     GPU_MODELS specs are forwarded to train_candidate_gpu (call that directly to skip this hop)."""
@@ -483,7 +487,7 @@ def train_candidate(spec: dict) -> dict:
     return _train(spec)
 
 
-@app.function(volumes={DATA_DIR: vol}, cpu=4, timeout=1800, **GPU_KW)
+@app.function(volumes={DATA_DIR: vol}, cpu=4, timeout=1800, max_containers=min(MAX_CONTAINERS, 10), **GPU_KW)
 def train_candidate_gpu(spec: dict) -> dict:
     """Same as train_candidate on an L4 GPU with tabicl + torch installed. Route tabicl specs here."""
     return _train(spec)
