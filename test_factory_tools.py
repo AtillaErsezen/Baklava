@@ -29,6 +29,7 @@ class FakeFn:
         return [self._one(s) for s in specs]
 
     def remote(self, spec, *args):
+        self.paths = getattr(self, "paths", []) + [args[0] if args else None]
         if self.kind in ("predict_holdout", "predict_holdout_gpu"):
             y = HOLD["y"]
             rng = np.random.default_rng(len(spec["name"]))
@@ -162,6 +163,18 @@ def test_data_try_more_rows_adds_rows_to_training_only():
     assert "extra_train_path" not in base_s and aug_s["extra_train_path"] == f"/datasets/up{len(uploads)}.parquet"
     assert aug_s["dataset_path"] == base_s["dataset_path"] and aug_s["repeats"] == base_s["repeats"] == ft.CONFIRM_REPEATS
     assert "error" in bad and set(ft.DATA_TRY_SCHEMA_ADDITIONS) == {"mode", "column_map"}
+
+
+
+def test_predictions_use_the_requested_split_not_hidden():
+    """Ensemble weights must be fit on search_val; predicting hidden there would leak the final test."""
+    run, fns = make_run()
+    run.tool_run_search({"rationale": "t", "task": "classification", "primary_metric": "roc_auc",
+                         "drop_columns": ["customer_id", "refund_issued"]})
+    run.hidden_path = "/datasets/hidden.parquet"
+    spec = run.specs[run.search["top"][0]["name"]]
+    run._predict([spec], "/datasets/search_val.parquet")
+    assert fns["predict_holdout"].paths[-1] == "/datasets/search_val.parquet"
 
 
 if __name__ == "__main__":

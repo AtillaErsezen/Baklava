@@ -277,7 +277,7 @@ class PipelineTools:
             full = {k: v for k, v in s.items() if k != "train_rows"}
             fn = self.fns["predict_holdout_gpu" if s["model"] in GPU_MODELS else "predict_holdout"]
             try:
-                preds[s["name"]] = fn.remote(full, self.hidden_path)
+                preds[s["name"]] = fn.remote(full, path)
             except Exception as e:
                 self.emit("status", {"msg": f"prediction failed for {s['name']}: {type(e).__name__}"})
         return preds
