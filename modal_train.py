@@ -31,17 +31,11 @@ MODEL_MENU = {
 app = modal.App(APP_NAME)
 vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 image = (
-    modal.Image.debian_slim(python_version="3.11")
+    modal.Image.debian_slim(python_version="3.13")
     .apt_install("libgomp1")  # lightgbm needs OpenMP
-    .pip_install(
-        "numpy==1.26.4",
-        "pandas==2.2.3",
-        "pyarrow==17.0.0",
-        "scikit-learn==1.5.2",
-        "lightgbm==4.5.0",
-        "xgboost==2.1.1",
-        "joblib==1.4.2",
-    )
+    # pandas/pyarrow must match the local venv: parquet is written locally, read here
+    # ponytail: ML libs unpinned, pin to whatever the first green smoke test resolves
+    .uv_pip_install("pandas==3.0.6", "pyarrow==25.0.1", "scikit-learn", "lightgbm", "xgboost", "joblib")
 )
 
 
@@ -88,6 +82,10 @@ def upload_dataset(df) -> str:
 # ------------------------------------------------------------------ remote side (Modal containers)
 
 def _clean(X):
+    """Coerce raw feature columns into types the sklearn pipeline can handle: booleans
+    become 0/1 ints, each datetime column is replaced by _year/_month/_dow parts, and any
+    other non-numeric column becomes object dtype holding strings, with missing values
+    kept as NaN so the imputer still sees them. Returns a copy; X is not modified."""
     import pandas as pd
 
     X = X.copy()
@@ -104,6 +102,11 @@ def _clean(X):
 
 
 def _load_xy(spec):
+    """Read the spec's dataset from the volume and split it into (X, y, classes).
+    Drops rows with a missing target, sorts by time_column when one is given (required
+    for timeseries CV), and removes drop_columns. For classification, y is
+    label-encoded and `classes` holds the original labels in encoded order; for
+    regression, y is float and `classes` is None."""
     import pandas as pd
 
     vol.reload()
@@ -127,6 +130,12 @@ def _load_xy(spec):
 
 
 def _build_pipeline(X, spec):
+    """Build an unfitted preprocessing + estimator Pipeline for one candidate.
+    Numeric columns are imputed (median by default) and scaled by default only for the
+    scale-sensitive models (logreg, ridge, mlp). Categorical columns are imputed with
+    the most frequent value, then one-hot encoded (capped at max_categories, default 20)
+    or ordinal encoded. The estimator gets the ESTIMATORS defaults with the spec's
+    params merged over them. Raises ValueError if the model isn't on the task's menu."""
     import importlib
 
     from sklearn.compose import ColumnTransformer
@@ -160,6 +169,9 @@ def _build_pipeline(X, spec):
 
 
 def _cv(spec):
+    """Pick the CV splitter: TimeSeriesSplit for cv="timeseries" (no shuffling, so
+    rows must already be in time order), otherwise a shuffled, seeded
+    StratifiedKFold for classification or KFold for regression."""
     from sklearn.model_selection import KFold, StratifiedKFold, TimeSeriesSplit
 
     k = spec.get("cv_folds", 5)
@@ -171,12 +183,20 @@ def _cv(spec):
 
 
 def _scoring(task, n_classes):
+    """Map our metric names to sklearn scorer names. Multiclass ROC AUC uses
+    one-vs-rest. Error metrics use sklearn's negated scorers; train_candidate flips
+    the sign back, so reported rmse and mae are positive."""
     if task == "classification":
         return {"accuracy": "accuracy", "f1_macro": "f1_macro", "roc_auc": "roc_auc" if n_classes == 2 else "roc_auc_ovr"}
     return {"rmse": "neg_root_mean_squared_error", "mae": "neg_mean_absolute_error", "r2": "r2"}
 
 
 def _top_features(pipe, k=10):
+    """Return the k most important features of a fitted pipeline as
+    [{"feature", "importance"}], using feature_importances_ for tree models or the mean
+    absolute coef_ for linear ones. Names are post-encoding (e.g. one-hot columns).
+    Returns [] for models with neither (MLP) or if the lookup fails; it is only
+    informational and must never fail the final fit."""
     import numpy as np
 
     try:
