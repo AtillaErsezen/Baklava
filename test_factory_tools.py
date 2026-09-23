@@ -3,6 +3,7 @@ Run: uv run python test_factory_tools.py"""
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 
 import agent
 import factory_tools
@@ -201,6 +202,8 @@ def test_forecasting_goal_builds_a_leak_free_supervised_table():
     assert run.forecast and run.task == "regression" and "units_lag1" in run.df.columns
     assert run.time_column == "date" and run.hidden_df["date"].min() > run.dev_df["date"].max()
     assert any(f["check"] == "naive_baseline" for f in run.diag["findings"])
+    # nothing about the hidden period may shape features or the naive bar the agent sees
+    assert pd.Timestamp(run.forecast["fit_until"]) < run.hidden_df["date"].min()
     out = run.tool_run_search({"rationale": "t", "task": "regression", "primary_metric": "mae"})
     assert run.search["base"]["cv"] == "walk_forward" and run.search["base"]["time_column"] == "date"
 

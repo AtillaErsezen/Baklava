@@ -36,6 +36,7 @@ TOP_K = 3
 CONFIRM_REPEATS = 2  # 5-fold x 2 repeats = 10 paired folds
 ROPE = 0.005         # practical-equivalence band for the Bayesian test
 GPU_MODELS = {"tabicl"}
+DEV_FRACTION = 0.7  # split_three: dev 70 / search_val 10 / hidden 20; time data keeps that order
 USE_CASE_MIN_SCORE = 0.3  # TF-IDF + column match; below this the goal is too vague to steer the search
 COMPACT_KEEP = 2     # tool results kept verbatim in context; older ones are truncated
 # Modal list prices (modal.com/pricing, 2026-09): per core-second, per GiB-second, per L4-second.
@@ -121,22 +122,31 @@ class PipelineTools:
         return hits[0] if hits and hits[0].get("score", 0) >= USE_CASE_MIN_SCORE else None
 
     def _to_forecast_table(self) -> None:
-        """Forecasting goal: lag / rolling / calendar features with no look-ahead, audited before use."""
-        s = fc.detect_structure(self.df, self.target)
-        if not s.get("time_col"):
+        """Forecasting goal: lag / rolling / calendar features with no look-ahead, audited before use.
+        Everything chosen from data (entity columns, frequency, season, lags, windows, the naive bar) looks only
+        at rows up to the end of the future dev split, so the hidden period never shapes what the agent sees."""
+        time_col = fc.detect_structure(self.df, self.target).get("time_col")
+        if not time_col:
             return
+        times = np.sort(pd.to_datetime(self.df[time_col]).to_numpy())
+        fit_until = pd.Timestamp(times[max(int(len(times) * DEV_FRACTION) - 1, 0)])
+        raw_dev = self.df[pd.to_datetime(self.df[time_col]) <= fit_until]
+        s = fc.detect_structure(raw_dev, self.target, time_col)
         try:
-            frame, man = fc.make_supervised(self.df, self.target, s["time_col"], s["entity_cols"], horizon=1)
-            issues = fc.leakage_audit(frame, self.target, s["time_col"], raw=self.df, manifest=man)
+            frame, man = fc.make_supervised(self.df, self.target, time_col, s["entity_cols"], horizon=1,
+                                            fit_until=fit_until)
+            issues = fc.leakage_audit(frame, self.target, time_col, raw=self.df, manifest=man)
         except (ValueError, KeyError) as e:
             self.forecast = {"skipped": f"{type(e).__name__}: {e}"[:200]}
             return
         if issues:
             self.forecast = {"skipped": "leakage audit failed", "issues": issues[:5]}
             return
-        self.forecast = {"structure": s, "manifest": man, "naive": fc.naive_baselines(frame, self.target, man)}
+        frame_times = pd.to_datetime(frame[time_col])
+        naive = fc.naive_baselines(frame[frame_times <= fit_until], self.target, man)  # tail of dev, never hidden
+        self.forecast = {"structure": s, "manifest": man, "naive": naive, "fit_until": fit_until.isoformat()}
         self.df, self.task = frame.reset_index(drop=True), "regression"
-        self.df[s["time_col"]] = pd.to_datetime(self.df[s["time_col"]])
+        self.df[time_col] = pd.to_datetime(self.df[time_col])
 
     def _use_case_findings(self) -> None:
         """Surface use-case leakage suspects and the naive forecast bar as diagnostics findings."""
@@ -253,6 +263,7 @@ class PipelineTools:
                                   "n_star": n_star, "schedule": schedule, "rationale": inp.get("rationale"),
                                   "cv": base["cv"], "time_column": base["time_column"]})
         out = racing.race(configs, evaluate, schedule, higher_is_better=HIGHER_IS_BETTER[pm],
+                          test_train_ratio=st.test_train_ratio(base["cv"], base["cv_folds"]),
                           budget_fits=MAX_FITS, on_rung=lambda s: self.emit("rung", s))
         for t in out["top"]:
             self.specs[t["name"]] = self._spec(base, by_name[t["name"]], n_star)
@@ -283,7 +294,8 @@ class PipelineTools:
             rows.append({"name": k, "family": fam, "folds": f, "mean": float(np.mean(f)), "std": float(np.std(f, ddof=1)),
                          "n_folds": len(f), "fit_s": r.get("fit_seconds"), "predict_ms": r.get("predict_ms")})
         best = max(rows, key=lambda r: sign * r["mean"])
-        n_test, n_train = n / 5, n * 4 / 5
+        cv = self.search["base"]["cv"]
+        n_train, n_test = 1.0, st.test_train_ratio(cv, self.search["base"]["cv_folds"])  # only the ratio matters
         pv, bayes = {}, {}
         for r in rows:
             if r["name"] != best["name"]:
@@ -318,7 +330,10 @@ class PipelineTools:
         self.confirmed = {"pm": pm, "rows": {t["name"]: t for t in table}, "pick": pick}
         out = {"primary_metric": pm, "table": table, "recommendation": pick, "tie_groups": groups,
                "ensemble": self._ensemble([self.specs[r["name"]] for r in rows], pm, task, best["name"]),
-               "notes": "p_vs_best: Nadeau-Bengio corrected t on 10 paired folds; hidden: one-shot holdout."}
+               "notes": "p_vs_best: Nadeau-Bengio corrected t on paired folds"
+                        + (" (approximate for time-ordered folds, with a conservative walk-forward ratio)"
+                           if cv in ("walk_forward", "timeseries", "purged") else "")
+                        + "; hidden: one-shot holdout."}
         self._last_confirm = out
         self.emit("confirm", out)
         return out
@@ -448,8 +463,8 @@ class PipelineTools:
         a, b = res[aug_s["name"]]["metrics"][pm]["folds"], res["base"]["metrics"][pm]["folds"]
         if not HIGHER_IS_BETTER[pm]:
             a, b = b, a
-        n = self.search["n_star"]
-        test = st.nadeau_bengio(a, b, n * 4 / 5, n / 5)
+        base = self.search["base"]
+        test = st.nadeau_bengio(a, b, 1.0, st.test_train_ratio(base["cv"], base["cv_folds"]))
         verdict = "improves" if test["p_one_sided"] < 0.05 else ("worse" if test["p_one_sided"] > 0.95 else "no_gain")
         out = {"source": links[0], "verdict": verdict, "delta": test["mean_diff"], "ci": [test["ci_low"], test["ci_high"]],
                "p_one_sided": test["p_one_sided"], **rep}

@@ -91,6 +91,17 @@ def test_corrected_t():
     assert r._corrected_t_one_sided([0.5, 0.52, 0.49, 0.5, 0.51], [0.9, 0.91, 0.89, 0.9, 0.92], 800, 200) > 0.99
 
 
+
+def test_race_accepts_the_cv_test_train_ratio():
+    """A larger ratio (walk-forward) inflates the variance correction, so borderline configs survive."""
+    import inspect
+    assert "test_train_ratio" in inspect.signature(r.race).parameters
+    a = [0.80, 0.82, 0.81, 0.79, 0.83]
+    b = [0.78, 0.80, 0.80, 0.78, 0.80]
+    t1 = r._corrected_t_one_sided
+    assert t1(a, b, 1.0, 0.4567) > t1(a, b, 4.0, 1.0)   # p grows with the ratio
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

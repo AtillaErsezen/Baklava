@@ -55,6 +55,7 @@ def _optimistic(hist: list[tuple[int, float]], n_max: int) -> float:
 
 def race(configs: list[dict], evaluate: Callable[[list[dict], int], list[dict]], schedule: list[dict],
          higher_is_better: bool = True, alpha: float = 0.05, protect: int | None = None, n_folds: int = 5,
+         test_train_ratio: float | None = None,
          budget_fits: int | None = None, tau_stop: float = 0.8, on_rung: Callable[[dict], None] | None = None) -> dict:
     """Successive halving with Bonferroni corrected-t drops, LCCV drops, Kendall-tau early stop and a fit budget."""
     sign = 1.0 if higher_is_better else -1.0
@@ -94,6 +95,8 @@ def race(configs: list[dict], evaluate: Callable[[list[dict], int], list[dict]],
         lead = cur[order[0]]
         lead_folds = sign * np.asarray(lead["folds"])
         n_test = n_rows / n_folds
+        if test_train_ratio is not None:  # the CV scheme's own ratio (walk-forward folds are not 1/(k-1))
+            n_test = n_rows * test_train_ratio / (1 + test_train_ratio)
         m = len(order)
         keep, n_stat, n_rank = [], 0, 0
         for rank, name in enumerate(order):

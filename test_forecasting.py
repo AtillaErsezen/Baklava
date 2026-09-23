@@ -144,6 +144,20 @@ def test_drifting_sales_end_to_end():
     assert all(math.isfinite(b[k][m]) for k in ("last_value", "seasonal_naive") for m in ("mae", "rmse")), b
 
 
+
+def test_fit_until_keeps_the_season_choice_out_of_the_future():
+    """Season / lag choice must not see the hidden period: a weekly cycle that only exists late is ignored."""
+    n = 1000
+    t = pd.date_range("2020-01-01", periods=n, freq="D")
+    y = np.random.default_rng(3).normal(0, 1, n)
+    y[700:] += 10 * np.sin(2 * np.pi * np.arange(300) / 7)
+    df = pd.DataFrame({"date": t, "y": y})
+    _, full = fc.make_supervised(df, "y", "date", [], horizon=1)
+    _, cut = fc.make_supervised(df, "y", "date", [], horizon=1, fit_until=t[699])
+    # full series: the late weekly cycle is detected by ACF; dev only: nothing to detect (7 is just the daily default)
+    assert full["season_source"] == "acf" and cut["season_source"] != "acf"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -11,6 +11,16 @@ def _r(x: float) -> float:
     return round(float(x), 6)
 
 
+def test_train_ratio(cv: str, k: int) -> float:
+    """n_test / n_train for the Nadeau-Bengio variance term, per CV scheme. kfold and purged: 1 / (k - 1).
+    walk_forward / timeseries (TimeSeriesSplit): fold i trains on i blocks and tests on 1, so the average ratio is
+    mean(1 / i). The correction was derived for exchangeable resamples; for time-ordered folds it is an
+    approximation, and this ratio makes it more conservative, not less."""
+    if cv in ("walk_forward", "timeseries"):
+        return sum(1 / i for i in range(1, k + 1)) / k
+    return 1 / (k - 1)
+
+
 def nadeau_bengio(a: Sequence[float], b: Sequence[float], n_train: int, n_test: int, alpha: float = 0.05) -> dict:
     """Corrected resampled t-test (Nadeau and Bengio 2003) on paired per-fold scores; positive diff means a better."""
     d = np.asarray(a, float) - np.asarray(b, float)

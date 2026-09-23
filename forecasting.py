@@ -271,8 +271,10 @@ def _season(data: pd.DataFrame, target: str, time_col: str, step_days: float | N
 
 def make_supervised(df: pd.DataFrame, target: str, time_col: str, entity_cols: list[str] | None,
                     horizon: int = 1, lags: list[int] | None = None, windows: list[int] | None = None,
-                    unknown_future: list[str] | None = None) -> tuple[pd.DataFrame, dict]:
-    """Leak-free supervised frame (label named `target`, sorted by time) and its manifest."""
+                    unknown_future: list[str] | None = None, fit_until=None) -> tuple[pd.DataFrame, dict]:
+    """Leak-free supervised frame (label named `target`, sorted by time) and its manifest.
+    fit_until: last timestamp the season / lag / window choice may look at (the end of the dev split),
+    so the held-out future never shapes the features. Feature values stay causal over the whole series."""
     ents, unknown = list(entity_cols or []), list(unknown_future or [])
     if not isinstance(horizon, (int, np.integer)) or horizon < 1:
         raise ValueError("horizon must be a positive integer")
@@ -282,10 +284,13 @@ def make_supervised(df: pd.DataFrame, target: str, time_col: str, entity_cols: l
     n_dup = int(data.duplicated([*ents, time_col]).sum())
     if n_dup:
         raise ValueError(f"{n_dup} rows repeat an (entity, time) pair; add entity columns or aggregate first")
-    steps = _steps(data, time_col, ents)
+    fit = data if fit_until is None else data[data[time_col] <= pd.Timestamp(fit_until)]
+    if len(fit) < 3:
+        raise ValueError("fit_until leaves fewer than 3 rows to choose lags from")
+    steps = _steps(fit, time_col, ents)
     freq = _frequency(steps)
     n_min = int(steps.groupby("g").size().min())
-    season, source = _season(data, target, time_col, freq["step_days"], n_min)
+    season, source = _season(fit, target, time_col, freq["step_days"], n_min)
     lags = _choose_lags(horizon, season, lags, n_min // 2)
     windows = _choose_windows(season, windows, n_min // 2)
     others = [c for c in data.columns if c not in (target, time_col, *ents)]

@@ -136,6 +136,15 @@ def test_bayes_correlated():
     assert r["p_a_better"] > 0.5
 
 
+
+def test_test_train_ratio_matches_the_cv_scheme():
+    assert abs(st.test_train_ratio("kfold", 5) - 0.25) < 1e-12          # 1 test fold vs 4 train folds
+    assert abs(st.test_train_ratio("purged", 5) - 0.25) < 1e-12
+    walk = sum(1 / i for i in range(1, 6)) / 5                           # fold i trains on i blocks, tests on 1
+    assert abs(st.test_train_ratio("walk_forward", 5) - walk) < 1e-12
+    assert st.test_train_ratio("walk_forward", 5) > st.test_train_ratio("kfold", 5)  # more conservative
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
