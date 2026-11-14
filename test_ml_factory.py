@@ -79,6 +79,11 @@ def test_no_llm_loop():
         tie = [f["name"] for f in run.finalists if f["tie_with_best"]]
         assert run.report["recommended"] in tie and "hidden" in run.finalists[0]
         assert "| model |" in run.report["markdown"]
+        # a later round that leaves out drop_columns keeps the earlier drops (the leaky column stays out)
+        out = run.tool_run_experiments({"rationale": "t", "task": "classification", "primary_metric": "roc_auc",
+                                        "candidates": [{"name": "lr_again", "model": "logreg"}]})
+        assert set(run.specs["lr_again"]["drop_columns"]) == {"customer_id", "refund_issued"}
+        assert out["leaderboard"][0]["roc_auc"] < 0.95, out
         pred = train.predict(run.final["model_path"], churn.head(50).drop(columns="Churn"))
         assert len(pred) == 50 and set(pred) <= {"Yes", "No"}
     finally:

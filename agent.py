@@ -22,7 +22,7 @@ import stats
 import train
 from train import MODEL_MENU, SEED, load_local
 
-MODEL = os.getenv("AGENT_MODEL", "qwen3")
+MODEL = os.getenv("AGENT_MODEL", "qwen3:4b-instruct")  # plain "qwen3" is a thinking model: far slower
 BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
 MAX_STEPS = 20
 MAX_ROUNDS = 3
@@ -115,10 +115,12 @@ TOOLS = [
               "rationale": {"type": "string", "description": "Why this round. Shown to the user."},
               "task": {"type": "string", "enum": ["classification", "regression"]},
               "primary_metric": {"type": "string", "enum": list(HIGHER_IS_BETTER)},
-              "cv": {"type": "string", "enum": ["kfold", "timeseries"]},
+              "cv": {"type": "string", "enum": ["kfold", "timeseries"],
+                     "description": "Omit to keep the previous round's."},
               "cv_folds": {"type": "integer", "minimum": 3, "maximum": 10},
               "time_column": {"type": "string", "description": "Sort by this before timeseries CV."},
-              "drop_columns": {"type": "array", "items": {"type": "string"}},
+              "drop_columns": {"type": "array", "items": {"type": "string"},
+                               "description": "Omit to keep the previous round's list; [] uses every column."},
               "candidates": {
                   "type": "array", "maxItems": MAX_CANDIDATES,
                   "description": "Omit to run the fixed portfolio.",
@@ -320,7 +322,9 @@ def _llm():
     """OpenAI-compatible client for LLM_BASE_URL. Local servers ignore the key."""
     from openai import OpenAI
 
-    return OpenAI(base_url=BASE_URL, api_key=os.getenv("LLM_API_KEY", "local"))
+    # CPU-only local models can take well over the client's default 10 minutes for one long answer,
+    # and a timed-out request is retried from scratch.
+    return OpenAI(base_url=BASE_URL, api_key=os.getenv("LLM_API_KEY", "local"), timeout=3600)
 
 
 def _setup_key(spec):
@@ -352,7 +356,7 @@ class FactoryRun:
             "hidden_rows_duplicated_in_dev": cross_split_duplicates(self.dev, self.hidden, target)}
         if self.time_col:
             self.profile["time_order"] = {"column": self.time_col, "suggest": "cv=timeseries with this time_column"}
-        self.rounds, self.pm, self.setup = 0, None, None
+        self.rounds, self.pm, self.setup, self.base = 0, None, None, None
         self.specs, self.results, self.events = {}, [], []
         self.finalists, self.final, self.report = None, None, None
         self.tokens = {"prompt": 0, "completion": 0}
@@ -407,17 +411,22 @@ class FactoryRun:
         bad = [c.get("name") for c in cands if c.get("model") not in MODEL_MENU[task]]
         if bad:
             return {"error": f"Invalid models for {task}: {bad}. Allowed: {MODEL_MENU[task]}"}
-        cv = inp.get("cv", "kfold")
-        time_col = inp.get("time_column") or (self.time_col if cv == "timeseries" else None)
-        drops = [c for c in inp.get("drop_columns") or [] if c != self.target]
+        # Settings a later round leaves out carry over; otherwise forgetting drop_columns brings a leaky column back.
+        prev = self.base or {}
+        cv = inp.get("cv") or prev.get("cv", "kfold")
+        time_col = (inp.get("time_column") or (prev.get("time_column") if cv == prev.get("cv") else None)
+                    or (self.time_col if cv == "timeseries" else None))
+        drops = inp["drop_columns"] if inp.get("drop_columns") is not None else prev.get("drop_columns", [])
+        drops = [c for c in drops if c != self.target]
         unknown = [c for c in drops + ([time_col] if time_col else []) if c not in self.dev.columns]
         if unknown:
             return {"error": f"Unknown columns {unknown}. Columns: {list(self.dev.columns)}"}
 
         self.rounds += 1
         base = {"target": self.target, "task": task, "cv": cv,
-                "cv_folds": inp.get("cv_folds", 5), "time_column": time_col, "drop_columns": drops}
-        self.pm, self.setup = pm, _setup_key(base)
+                "cv_folds": inp.get("cv_folds") or prev.get("cv_folds", 5), "time_column": time_col,
+                "drop_columns": drops}
+        self.pm, self.setup, self.base = pm, _setup_key(base), base
         specs = []
         for c in cands:
             name = c["name"] if c["name"] not in self.specs else f"{c['name']}_r{self.rounds}"
@@ -425,7 +434,7 @@ class FactoryRun:
                     "params": c.get("params") or {}, "preprocessing": c.get("preprocessing") or {}}
             self.specs[name] = spec
             specs.append(spec)
-        self.emit("round_start", {"round": self.rounds, "rationale": inp["rationale"],
+        self.emit("round_start", {"round": self.rounds, "rationale": inp["rationale"], "drop_columns": drops,
                                   "portfolio": not inp.get("candidates"),
                                   "candidates": [{k: s[k] for k in ("name", "model", "params")} for s in specs]})
 

@@ -320,7 +320,7 @@ function handle(e) {
     if (p.msg.startsWith("LLM call failed")) append(`<p class="error">${esc(p.msg)}</p>`);
     else status(p.msg.startsWith("Confirming finalists") ? "Retesting the top three" : p.msg);
   } else if (e.kind === "round_start") {
-    rounds[p.round] = { rows: [], of: p.candidates.length, portfolio: p.portfolio, rationale: p.rationale, drops, pm: null };
+    rounds[p.round] = { rows: [], of: p.candidates.length, portfolio: p.portfolio, rationale: p.rationale, drops: p.drop_columns || drops, pm: null };
     status(`Round ${p.round}: training ${p.candidates.length} models`);
   } else if (e.kind === "candidate") {
     const r = rounds[p.round]; r.pm = pm = p.primary_metric; r.rows.push(p);
