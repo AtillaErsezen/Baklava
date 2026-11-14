@@ -73,7 +73,7 @@ def test_no_llm_loop():
     try:
         run.run()
         kinds = [e["kind"] for e in run.events]
-        assert {"leaderboard", "confirm", "hidden_test", "final_model", "report"} <= set(kinds), kinds
+        assert {"candidate", "leaderboard", "confirm", "hidden_test", "final_model", "report"} <= set(kinds), kinds
         assert set(run.specs["logreg_default"]["drop_columns"]) == {"customer_id", "refund_issued"}
         assert all(r["ok"] for r in run.results), [r.get("error") for r in run.results]
         tie = [f["name"] for f in run.finalists if f["tie_with_best"]]
@@ -83,6 +83,42 @@ def test_no_llm_loop():
         assert len(pred) == 50 and set(pred) <= {"Yes", "No"}
     finally:
         for f in glob.glob(f"runs/{run.run_id}_*"):
+            os.remove(f)
+
+
+def test_ui_server():
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    import ui
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), ui.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_port}"
+
+    def call(path, data=None, headers=None):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(base + path, data=data, headers=headers or {})) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    ui.UPLOADS = "runs/_test_uploads"
+    try:
+        assert call("/events")[1] == {"events": [], "running": False, "error": None}
+        assert call("/config", headers={"Host": "evil.example"})[0] == 403
+        assert call("/stop", b"", {"Origin": "http://evil.example"})[0] == 403
+        assert call("/upload", b"x", {"X-Filename": "notes.txt"})[0] == 400
+        code, up = call("/upload", b"a,b,y\n1,2,0\n3,4,1\n", {"X-Filename": "../../tiny.csv"})
+        assert code == 200 and up == {"file": "tiny.csv", "rows": 2, "columns": ["a", "b", "y"]}, up
+        assert os.path.isfile("runs/_test_uploads/tiny.csv")  # path stripped, stays inside UPLOADS
+        assert call("/run", json.dumps({"file": "missing.csv", "target": "y"}).encode())[0] == 400
+    finally:
+        srv.shutdown()
+        for f in glob.glob("runs/_test_uploads/*"):
             os.remove(f)
 
 

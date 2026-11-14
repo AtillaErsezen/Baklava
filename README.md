@@ -19,7 +19,16 @@ uv sync
 uv run make_demo_data.py   # optional: writes data/churn.csv and data/houses.csv
 ```
 
-With a local LLM ([Ollama](https://ollama.com), or any OpenAI-compatible server):
+In the browser:
+
+```bash
+uv run ui.py
+```
+
+Then open http://127.0.0.1:8000, add your table, pick the column to predict and start the run. The page shows
+every model as it finishes, the final three, and a download button for the winner.
+
+From the terminal, with a local LLM ([Ollama](https://ollama.com), or any OpenAI-compatible server):
 
 ```bash
 ollama pull qwen3

@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ML Factory</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #F2F5EC; --surface: #FBFCF8; --ink: #1B2619; --ink-2: #55624F; --line: #D5DCCB;
+    --pistachio: #5E8C31; --honey: #B8730A; --honey-ink: #8A5606; --honey-wash: #F6E9CC; --danger: #A8321F;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141A12; --surface: #1C241A; --ink: #E8EEDF; --ink-2: #A3AF99; --line: #2F3A2B;
+      --pistachio: #9CC56A; --honey: #E3A63C; --honey-ink: #E3A63C; --honey-wash: #33290F; --danger: #F08A76;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { font-size: 15px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink); line-height: 1.5;
+    font-family: "Inter Variable", "Avenir Next", "Segoe UI Variable Text", "Segoe UI", Ubuntu, Cantarell, "Noto Sans", system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+  }
+  h1, h2, h3, h4, p { margin: 0; }
+  :focus-visible { outline: 2px solid var(--honey); outline-offset: 2px; }
+
+  .shell { display: grid; grid-template-columns: 340px minmax(0, 1fr); min-height: 100vh; }
+  .setup { background: var(--surface); border-right: 1px solid var(--line); padding: 28px 24px; }
+  .run { padding: 28px 40px 80px; max-width: 980px; }
+
+  /* three pastry layers: the field, the finalists, the one that's left */
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
+  .brand i { display: block; height: 4px; border-radius: 2px; margin: 2px 0; }
+  .brand i:nth-child(1) { width: 22px; background: var(--pistachio); }
+  .brand i:nth-child(2) { width: 14px; background: var(--ink-2); }
+  .brand i:nth-child(3) { width: 7px; background: var(--honey); }
+  .brand h1 { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.01em; }
+
+  fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+  .field { margin-bottom: 20px; }
+  .field > label, .field > .label { display: block; font-weight: 600; margin-bottom: 6px; }
+  .hint { color: var(--ink-2); font-size: 0.87rem; margin-top: 6px; }
+  select, textarea {
+    width: 100%; font: inherit; color: inherit; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+  }
+  textarea { resize: vertical; min-height: 84px; }
+  .drop {
+    display: block; border: 1.5px dashed var(--ink-2); border-radius: 8px; padding: 18px 14px;
+    text-align: center; cursor: pointer; background: var(--bg);
+  }
+  .drop.over { border-color: var(--honey); background: var(--honey-wash); }
+  .drop input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .drop:focus-within { outline: 2px solid var(--honey); outline-offset: 2px; }
+  .drop strong { display: block; }
+  .drop span { color: var(--ink-2); font-size: 0.87rem; }
+
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg label { text-align: center; padding: 7px 4px; cursor: pointer; font-size: 0.93rem; border-left: 1px solid var(--line); }
+  .seg label:first-child { border-left: 0; }
+  .seg input { position: absolute; opacity: 0; }
+  .seg input:checked + span { font-weight: 650; }
+  .seg label:has(input:checked) { background: var(--ink); color: var(--surface); }
+  .seg label:has(input:focus-visible) { outline: 2px solid var(--honey); outline-offset: -2px; }
+
+  .check { display: flex; gap: 9px; align-items: flex-start; }
+  .check input { margin-top: 4px; accent-color: var(--pistachio); }
+
+  button, .button {
+    font: inherit; font-weight: 650; cursor: pointer; border-radius: 6px; padding: 10px 16px;
+    border: 1px solid var(--ink); background: var(--ink); color: var(--surface); text-decoration: none; display: inline-block;
+  }
+  button.quiet { background: transparent; color: var(--ink); border-color: var(--line); padding: 6px 12px; font-weight: 550; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  #go { width: 100%; }
+
+  .status {
+    position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px;
+    background: var(--bg); border-bottom: 1px solid var(--line); padding: 12px 0; margin-bottom: 24px;
+  }
+  .status .text { flex: 1; font-weight: 600; }
+  .status .clock { color: var(--ink-2); }
+  .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--pistachio); animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; border-color: var(--pistachio); } }
+
+  .empty { max-width: 34em; padding-top: 12vh; }
+  .empty h2 { font-size: 2rem; line-height: 1.15; letter-spacing: -0.02em; margin-bottom: 16px; }
+  .empty ol { padding-left: 1.3em; margin: 16px 0 0; color: var(--ink-2); }
+  .empty li { margin-bottom: 6px; }
+  .empty li::marker { color: var(--ink); font-weight: 650; }
+
+  .block { margin-bottom: 36px; }
+  .block h3 { font-size: 1.13rem; font-weight: 650; margin-bottom: 4px; }
+  .block .sub { color: var(--ink-2); margin-bottom: 12px; max-width: 70ch; }
+  .note { border-left: 3px solid var(--pistachio); padding: 2px 0 2px 14px; max-width: 70ch; white-space: pre-wrap; }
+  .error { border-left: 3px solid var(--danger); padding: 2px 0 2px 14px; max-width: 70ch; }
+  .flags { list-style: none; padding: 0; margin: 10px 0 0; }
+  .flags li { padding: 5px 0; border-top: 1px solid var(--line); }
+  .flags b { font-weight: 650; }
+
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th { text-align: left; font-weight: 600; color: var(--ink-2); font-size: 0.87rem; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--ink-2); vertical-align: bottom; white-space: nowrap; }
+  td { padding: 7px 12px 7px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td.num, th.num { text-align: right; }
+  td .fam { color: var(--ink-2); font-size: 0.87rem; margin-left: 6px; }
+  td.fail { color: var(--ink-2); white-space: normal; }
+  #finalists td:first-child { white-space: normal; }
+  tr.pick td { background: var(--honey-wash); }
+  tr.pick td:first-child { box-shadow: inset 3px 0 0 var(--honey); padding-left: 10px; }
+  .tag { font-size: 0.8rem; font-weight: 650; color: var(--honey-ink); margin-left: 8px; }
+
+  /* score strip: a dot at the mean, a whisker one standard deviation each way */
+  th.strip { min-width: 150px; width: 34%; }
+  .axis { display: flex; justify-content: space-between; font-weight: 400; }
+  .track { position: relative; height: 18px; min-width: 130px; }
+  .track .whisker { position: absolute; top: 8px; height: 2px; background: var(--pistachio); opacity: 0.55; border-radius: 1px; }
+  .track .dot { position: absolute; top: 4px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; background: var(--pistachio); box-shadow: 0 0 0 2px var(--bg); }
+  tr.pick .track .dot { background: var(--honey); box-shadow: 0 0 0 2px var(--honey-wash); }
+  tr.pick .track .whisker { background: var(--honey); }
+
+  .winner { border-top: 3px solid var(--honey); padding-top: 20px; }
+  .winner h3 { font-size: 2rem; line-height: 1.15; letter-spacing: -0.02em; margin: 2px 0 6px; }
+  .winner .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 18px 0; }
+  code { font-family: ui-monospace, "Cascadia Mono", "DejaVu Sans Mono", monospace; font-size: 0.9em; }
+  pre { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 6px 0 0; }
+  .feats { display: grid; grid-template-columns: max-content minmax(80px, 1fr); gap: 6px 14px; align-items: center; max-width: 560px; margin-top: 8px; }
+  .feats .bar { height: 8px; background: var(--pistachio); border-radius: 0 4px 4px 0; min-width: 2px; }
+  .report { max-width: 70ch; margin-top: 24px; }
+  .report h4 { font-size: 1.05rem; margin: 20px 0 6px; }
+  .report p, .report ul { margin: 0 0 10px; }
+  .report ul { padding-left: 1.3em; }
+  [hidden] { display: none !important; }
+
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: minmax(0, 1fr); }
+    .setup { border-right: 0; border-bottom: 1px solid var(--line); padding: 20px 16px; }
+    .run { padding: 20px 16px 60px; }
+    .empty { padding-top: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="setup">
+    <div class="brand"><div aria-hidden="true"><i></i><i></i><i></i></div><h1>ML Factory</h1></div>
+    <form id="form">
+      <fieldset id="fields">
+        <div class="field">
+          <span class="label" id="data-label">Your data</span>
+          <label class="drop" id="drop">
+            <input type="file" id="file" accept=".csv,.parquet" aria-labelledby="data-label">
+            <strong id="drop-title">Choose a table</strong>
+            <span id="drop-sub">CSV or Parquet. Drop it here or click to browse.</span>
+          </label>
+        </div>
+        <div class="field">
+          <label for="target">Column to predict</label>
+          <select id="target" disabled><option>Add your data first</option></select>
+        </div>
+        <div class="field">
+          <span class="label" id="task-label">It should predict</span>
+          <div class="seg" role="radiogroup" aria-labelledby="task-label">
+            <label><input type="radio" name="task" value="" checked><span>Auto-detect</span></label>
+            <label><input type="radio" name="task" value="classification"><span>A category</span></label>
+            <label><input type="radio" name="task" value="regression"><span>A number</span></label>
+          </div>
+        </div>
+        <div class="field">
+          <label for="goal">What is the model for?</label>
+          <textarea id="goal" placeholder="Catch customers about to leave. Missing one costs more than a false alarm."></textarea>
+          <p class="hint" id="goal-hint">Optional. The agent uses it to choose the metric and trade-offs.</p>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="llm"><span id="llm-text">Let the agent tune the best models</span></label>
+          <p class="hint" id="llm-hint">Checking for a local LLM…</p>
+        </div>
+        <button id="go" type="submit" disabled>Find the best model</button>
+      </fieldset>
+    </form>
+  </aside>
+
+  <main class="run">
+    <div class="status" id="status" hidden>
+      <div class="spin" id="spin"></div>
+      <div class="text" id="status-text" role="status" aria-live="polite"></div>
+      <div class="clock" id="clock"></div>
+      <button class="quiet" id="stop" type="button">Stop run</button>
+    </div>
+    <div class="empty" id="empty">
+      <h2>Bring a table. Leave with the model that held up best.</h2>
+      <p>Everything runs on this computer. A run usually takes a few minutes.</p>
+      <ol>
+        <li>A fifth of your rows are locked away as a final exam.</li>
+        <li>Fifteen models of six kinds compete on the rest.</li>
+        <li>The top three are retested, then take the exam once.</li>
+        <li>The winner is trained on every row and saved for you.</li>
+      </ol>
+    </div>
+    <div id="feed"></div>
+  </main>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const METRIC = { roc_auc: "ROC AUC", f1_macro: "F1 (macro)", accuracy: "Accuracy", r2: "R²", rmse: "RMSE", mae: "MAE" };
+const LOWER = { rmse: true, mae: true };
+const FAMILY = { logreg: "logistic regression", ridge: "ridge regression", random_forest: "random forest", lightgbm: "LightGBM", xgboost: "XGBoost", mlp: "neural network" };
+const FLAG = { possible_leakage: "may leak the answer", id_like: "looks like an ID", constant: "never changes", high_cardinality: "very many distinct values", mostly_missing: "mostly empty" };
+const fmt = v => v == null ? "–" : Math.abs(v) >= 100 ? Math.round(v).toLocaleString() : (+v).toFixed(3);
+const range = c => c ? `${fmt(c[0])} to ${fmt(c[1])}` : "–";
+
+let upload = null, since = 0, running = false, started = 0, timer = null, config = {};
+let rounds = {}, drops = [], finalists = null, recommended = null, pm = null;
+
+function block(id, html) {
+  let el = $(id);
+  if (!el) { el = document.createElement("section"); el.className = "block"; el.id = id; $("feed").append(el); }
+  el.innerHTML = html;
+  return el;
+}
+function append(html) {
+  const el = document.createElement("section");
+  el.className = "block"; el.innerHTML = html; $("feed").append(el);
+}
+function status(text) { $("status-text").textContent = text; }
+
+function renderRound(n) {
+  const r = rounds[n], ok = r.rows.filter(x => x[r.pm] != null), bad = r.rows.filter(x => x[r.pm] == null);
+  ok.sort((a, b) => LOWER[r.pm] ? a[r.pm] - b[r.pm] : b[r.pm] - a[r.pm]);
+  let lo = Math.min(...ok.map(x => x[r.pm] - x.std)), hi = Math.max(...ok.map(x => x[r.pm] + x.std));
+  const pad = (hi - lo) * 0.04 || 1; lo -= pad; hi += pad;
+  const pos = v => ((v - lo) / (hi - lo) * 100).toFixed(2);
+  const rows = ok.map(x => `<tr>
+      <td>${esc(x.name)}<span class="fam">${esc(FAMILY[x.model] || x.model || "")}</span>${x.warning ? '<span class="tag">suspiciously high</span>' : ""}</td>
+      <td><div class="track" aria-hidden="true"><div class="whisker" style="left:${pos(x[r.pm] - x.std)}%;width:${(2 * x.std / (hi - lo) * 100).toFixed(2)}%"></div><div class="dot" style="left:${pos(x[r.pm])}%"></div></div></td>
+      <td class="num">${fmt(x[r.pm])} ± ${fmt(x.std)}</td>
+      <td class="num">${fmt(x.overfit_gap)}</td>
+      <td class="num">${x.fit_seconds} s</td></tr>`).join("") +
+    bad.map(x => `<tr><td>${esc(x.name)}</td><td class="fail" colspan="4">Failed: ${esc(x.error || "")}</td></tr>`).join("");
+  const progress = r.done ? `${r.rows.length} models in ${r.wall} s` : `${r.rows.length} of ${r.of} models tried`;
+  block("round" + n, `<h3>Round ${n}: ${r.portfolio ? "the standard line-up" : "tuning the front-runners"}</h3>
+    <p class="sub">${r.portfolio ? "" : esc(r.rationale) + " "}${progress}.${r.drops.length ? " Left out: " + r.drops.map(esc).join(", ") + "." : ""}</p>
+    ${ok.length + bad.length ? `<div class="scroll"><table>
+      <thead><tr><th>Model</th>
+        <th class="strip">${METRIC[r.pm]}, ${LOWER[r.pm] ? "lower" : "higher"} is better<div class="axis"><span>${fmt(lo)}</span><span>${fmt(hi)}</span></div></th>
+        <th class="num">Score ± spread</th><th class="num" title="How much better the model does on rows it trained on. Large means it memorised.">Overfit gap</th><th class="num">Time</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>` : ""}`);
+}
+
+function renderFinalists() {
+  if (!finalists) return;
+  const rows = finalists.map(f => `<tr class="${f.name === recommended ? "pick" : ""}">
+      <td>${esc(f.name)}<span class="fam">${esc(FAMILY[f.model] || f.model)}</span>${f.name === recommended ? '<span class="tag">recommended</span>' : ""}</td>
+      <td class="num">${fmt(f.cv_mean)} ± ${fmt(f.cv_std)}</td>
+      <td title="${f.p_vs_best_holm == null ? "" : "p = " + f.p_vs_best_holm}">${f.p_vs_best_holm == null ? "best in retest" : f.tie_with_best ? "too close to call" : "clearly behind"}</td>
+      <td class="num">${f.hidden == null ? esc(f.hidden_error || "–") : fmt(f.hidden)}</td>
+      <td class="num">${range(f.hidden_ci)}</td>
+      <td class="num">${f.fit_seconds ?? "–"} s</td>
+      <td class="num">${f.predict_ms_per_1k ?? "–"} ms</td></tr>`).join("");
+  block("finalists", `<h3>The final three</h3>
+    <p class="sub">Each was retested ${finalists[0].n_folds} times, then scored once on the rows held back at the start. Models too close to call are treated as equals, and the simpler one wins. Likely range covers 95% of resampled exams.</p>
+    <div class="scroll"><table><thead><tr><th>Model</th><th class="num">Retest ${METRIC[pm]}</th><th>Against the best</th>
+      <th class="num">Final exam</th><th class="num">Likely range</th><th class="num">Train</th><th class="num">Predict 1,000</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`);
+}
+
+function markdown(md) {
+  // escape first: report text comes from the LLM
+  const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`(.+?)`/g, "<code>$1</code>");
+  let out = "", list = false;
+  for (const line of md.split("\n")) {
+    const item = line.match(/^\s*[-*]\s+(.*)/), head = line.match(/^#+\s+(.*)/);
+    if (list && !item) { out += "</ul>"; list = false; }
+    if (item) { out += (list ? "" : "<ul>") + `<li>${inline(item[1])}</li>`; list = true; }
+    else if (head) out += `<h4>${inline(head[1])}</h4>`;
+    else if (line.trim()) out += `<p>${inline(line)}</p>`;
+  }
+  return out + (list ? "</ul>" : "");
+}
+
+function renderWinner(final, report) {
+  const f = (finalists || []).find(x => x.name === final.name) || {};
+  const params = Object.entries(final.spec.params || {}).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join(", ");
+  const top = final.top_features || [], max = Math.max(...top.map(t => t.importance), 1e-12);
+  const text = report ? report.markdown.split("## Finalists (computed by the harness")[0].trim() : "";
+  const el = block("winner", `<p class="sub">Recommended model</p>
+    <h3>${esc(final.name)}</h3>
+    <p class="sub">${esc(FAMILY[final.spec.model] || final.spec.model)}, ${params ? esc(params) : "default settings"}. Trained on all ${final.n_rows.toLocaleString()} rows.
+      ${f.hidden != null ? `On the final exam it scored ${METRIC[pm]} ${fmt(f.hidden)} (likely range ${range(f.hidden_ci)}).` : ""}</p>
+    <div class="actions"><a class="button" href="/model" download>Download model</a><span>Saved as <code>${esc(final.model_path)}</code></span></div>
+    <p>Predict new rows from a terminal:</p>
+    <pre><code>uv run predict.py ${esc(final.model_path)} new.csv predictions.csv</code></pre>
+    ${top.length ? `<h4 style="margin-top:24px">What the model leans on most</h4><div class="feats">${top.map(t =>
+      `<span>${esc(t.feature.replace(/^(num|cat)__/, ""))}</span><div class="bar" title="${t.importance}" style="width:${(t.importance / max * 100).toFixed(1)}%"></div>`).join("")}</div>` : ""}
+    ${text.split("\n").filter(l => l.trim()).length > 1 ? `<div class="report">${markdown(text)}</div>` : ""}`);
+  el.classList.add("winner");
+}
+
+let finalModel = null;
+function handle(e) {
+  const p = e.payload;
+  if (e.kind === "run_start") {
+    started = e.ts * 1000;
+    const flags = Object.entries(p.flags || {});
+    block("data", `<h3>${esc(p.dataset)}: predicting ${esc(p.target)}</h3>
+      <p class="sub">${p.rows.toLocaleString()} rows, ${p.features} other columns. ${p.split.hidden_rows.toLocaleString()} rows are locked away for the final exam (${esc(p.split.method)}).</p>
+      ${flags.length ? `<ul class="flags">${flags.map(([c, fl]) => `<li><b>${esc(c)}</b> ${fl.map(x => FLAG[x] || x).join(", ")}</li>`).join("")}</ul>` : ""}`);
+    status("Checking the data");
+  } else if (e.kind === "thought") {
+    if (!p.text.startsWith("(no LLM)")) append(`<p class="note">${esc(p.text)}</p>`);
+  } else if (e.kind === "tool_call") {
+    if (p.tool === "run_experiments") drops = p.input.drop_columns || [];
+    if (p.tool === "inspect_column") status(`Looking closer at ${p.input.column}`);
+  } else if (e.kind === "status") {
+    if (p.msg.startsWith("LLM call failed")) append(`<p class="error">${esc(p.msg)}</p>`);
+    else status(p.msg.startsWith("Confirming finalists") ? "Retesting the top three" : p.msg);
+  } else if (e.kind === "round_start") {
+    rounds[p.round] = { rows: [], of: p.candidates.length, portfolio: p.portfolio, rationale: p.rationale, drops, pm: null };
+    status(`Round ${p.round}: training ${p.candidates.length} models`);
+  } else if (e.kind === "candidate") {
+    const r = rounds[p.round]; r.pm = pm = p.primary_metric; r.rows.push(p);
+    status(`Round ${p.round}: ${r.rows.length} of ${p.of} models trained`);
+    renderRound(p.round);
+  } else if (e.kind === "leaderboard") {
+    Object.assign(rounds[p.round], { done: true, wall: p.wall_seconds });
+    renderRound(p.round); status("Deciding what to try next");
+  } else if (e.kind === "confirm") {
+    status("Scoring the finalists on the held-back rows");
+  } else if (e.kind === "hidden_test") {
+    finalists = p.rows; pm = p.primary_metric; renderFinalists(); status("Choosing the winner");
+  } else if (e.kind === "final_model") {
+    finalModel = p; recommended = p.name; renderFinalists(); renderWinner(p, null);
+  } else if (e.kind === "report") {
+    renderWinner(finalModel, p);
+  } else if (e.kind === "run_end") {
+    status(p.completed ? "Done. Your model is ready." : "The run ended before a model was chosen.");
+  }
+}
+
+function setRunning(on) {
+  running = on;
+  $("fields").disabled = on; $("spin").hidden = !on; $("stop").hidden = !on;
+  clearInterval(timer);
+  if (on) timer = setInterval(() => {
+    if (!started) return;
+    const s = Math.round((Date.now() - started) / 1000);
+    $("clock").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }, 1000);
+}
+
+async function poll() {
+  let r;
+  try { r = await (await fetch(`/events?since=${since}`)).json(); }
+  catch { status("Lost contact with the local server. Is ui.py still running?"); return setRunning(false); }
+  r.events.forEach(handle); since += r.events.length;
+  if (r.running) return setTimeout(poll, 700);
+  if (r.error) { append(`<p class="error">${esc(r.error)}</p>`); status("The run did not finish."); }
+  setRunning(false);
+}
+
+function reset() {
+  since = 0; started = 0; rounds = {}; drops = []; finalists = recommended = finalModel = pm = null;
+  $("feed").innerHTML = ""; $("clock").textContent = "";
+  $("empty").hidden = true; $("status").hidden = false;
+}
+
+async function sendFile(file) {
+  if (!file) return;
+  $("drop-title").textContent = "Reading " + file.name + "…";
+  const res = await fetch("/upload", { method: "POST", body: file, headers: { "X-Filename": encodeURIComponent(file.name) } });
+  const r = await res.json();
+  if (!res.ok) { $("drop-title").textContent = "That file didn't work"; $("drop-sub").textContent = r.error; upload = null; $("go").disabled = true; return; }
+  upload = r;
+  $("drop-title").textContent = r.file;
+  $("drop-sub").textContent = `${r.rows.toLocaleString()} rows, ${r.columns.length} columns. Click to change.`;
+  const t = $("target");
+  t.innerHTML = r.columns.map(c => `<option>${esc(c)}</option>`).join("");
+  t.value = r.columns[r.columns.length - 1]; t.disabled = false; $("go").disabled = false;
+}
+
+$("file").addEventListener("change", e => sendFile(e.target.files[0]));
+const drop = $("drop");
+["dragenter", "dragover"].forEach(n => drop.addEventListener(n, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(n => drop.addEventListener(n, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => sendFile(e.dataTransfer.files[0]));
+
+$("form").addEventListener("submit", async e => {
+  e.preventDefault();
+  if (!upload || running) return;
+  const body = { file: upload.file, target: $("target").value, goal: $("goal").value.trim(), no_llm: !$("llm").checked,
+                 task: document.querySelector("input[name=task]:checked").value };
+  reset(); setRunning(true); status("Reading your data");
+  const res = await fetch("/run", { method: "POST", body: JSON.stringify(body) });
+  if (!res.ok) { append(`<p class="error">${esc((await res.json()).error)}</p>`); status("The run did not start."); return setRunning(false); }
+  poll();
+});
+$("stop").addEventListener("click", () => { fetch("/stop", { method: "POST" }); status("Stopping after the current model…"); });
+
+(async () => {
+  config = await (await fetch("/config")).json();
+  const where = config.base_url.replace(/^https?:\/\//, "").replace(/\/v1\/?$/, "");
+  $("llm").checked = config.llm_ok; $("llm").disabled = !config.llm_ok;
+  $("llm-hint").textContent = config.llm_ok
+    ? `Uses ${config.model} at ${where}. Unchecked, the run tries the standard 15 models only.`
+    : `No LLM answered at ${where}, so the run tries the standard 15 models only. Start one and reload this page to add tuning.`;
+  if (!config.llm_ok) $("goal-hint").textContent = "Optional. Only used when an agent is tuning.";
+  if (config.has_run) { reset(); setRunning(true); poll(); }
+})();
+</script>
+</body>
+</html>

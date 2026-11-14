@@ -436,17 +436,19 @@ class FactoryRun:
         for r in (train._train(self.dev, s) for s in specs):
             r["round"] = self.rounds
             self.results.append(r)
-            if not r["ok"]:
-                rows.append({"name": r["name"], "error": r["error"]})
-                continue
-            m = r["metrics"][pm]
-            gap = (m["train_mean"] - m["mean"]) if hib else (m["mean"] - m["train_mean"])
-            row = {"name": r["name"], pm: m["mean"], "std": m["std"], "train": m["train_mean"],
-                   "overfit_gap": round(gap, 4), "fit_seconds": r["fit_seconds"],
-                   "all_metrics": {k: v["mean"] for k, v in r["metrics"].items()}}
-            if pm in ("roc_auc", "accuracy", "r2") and m["mean"] > 0.995:
-                row["warning"] = "suspiciously_high_check_leakage"
+            if r["ok"]:
+                m = r["metrics"][pm]
+                gap = (m["train_mean"] - m["mean"]) if hib else (m["mean"] - m["train_mean"])
+                row = {"name": r["name"], pm: m["mean"], "std": m["std"], "train": m["train_mean"],
+                       "overfit_gap": round(gap, 4), "fit_seconds": r["fit_seconds"],
+                       "all_metrics": {k: v["mean"] for k, v in r["metrics"].items()}}
+                if pm in ("roc_auc", "accuracy", "r2") and m["mean"] > 0.995:
+                    row["warning"] = "suspiciously_high_check_leakage"
+            else:
+                row = {"name": r["name"], "error": r["error"]}
             rows.append(row)
+            self.emit("candidate", {"round": self.rounds, "of": len(specs), "primary_metric": pm,
+                                    "model": self.specs[r["name"]]["model"], **row})
 
         ok = sorted([x for x in rows if pm in x], key=lambda x: x[pm], reverse=hib)
         leaderboard = ok + [x for x in rows if pm not in x]
@@ -591,7 +593,8 @@ class FactoryRun:
         early it is nudged twice. Always saves whatever was produced."""
         self.emit("run_start", {"dataset": self.dataset_name, "target": self.target, "model": MODEL,
                                 "rows": len(self.df), "features": self.profile["n_features"],
-                                "split": self.profile["split"]})
+                                "split": self.profile["split"],
+                                "flags": {c["name"]: c["flags"] for c in self.profile["columns"] if c.get("flags")}})
         hint = f" The user says this is a {self.task_hint} task." if self.task_hint else ""
         if self.goal:
             hint += f" The user's goal and details: {self.goal}"

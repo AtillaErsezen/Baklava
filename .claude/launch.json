@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {"name": "ui", "runtimeExecutable": "uv", "runtimeArgs": ["run", "ui.py"], "port": 8000}
+  ]
+}
