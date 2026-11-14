@@ -126,6 +126,7 @@
   .winner h3 { font-size: 2rem; line-height: 1.15; letter-spacing: -0.02em; margin: 2px 0 6px; }
   .winner .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 18px 0; }
   code { font-family: ui-monospace, "Cascadia Mono", "DejaVu Sans Mono", monospace; font-size: 0.9em; }
+  details summary { cursor: pointer; color: var(--ink-2); }
   pre { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 6px 0 0; }
   .feats { display: grid; grid-template-columns: max-content minmax(80px, 1fr); gap: 6px 14px; align-items: center; max-width: 560px; margin-top: 8px; }
   .feats .bar { height: 8px; background: var(--pistachio); border-radius: 0 4px 4px 0; min-width: 2px; }
@@ -295,6 +296,8 @@ function renderWinner(final, report) {
     <div class="actions"><a class="button" href="/model" download>Download model</a><span>Saved as <code>${esc(final.model_path)}</code></span></div>
     <p>Predict new rows from a terminal:</p>
     <pre><code>uv run predict.py ${esc(final.model_path)} new.csv predictions.csv</code></pre>
+    ${final.script ? `<div class="actions"><button class="quiet" id="copy" type="button">Copy Python script</button><span>A standalone script that rebuilds this model from your data.</span></div>
+    <details><summary>Show the script</summary><pre><code>${esc(final.script)}</code></pre></details>` : ""}
     ${top.length ? `<h4 style="margin-top:24px">What the model leans on most</h4><div class="feats">${top.map(t =>
       `<span>${esc(t.feature.replace(/^(num|cat)__/, ""))}</span><div class="bar" title="${t.importance}" style="width:${(t.importance / max * 100).toFixed(1)}%"></div>`).join("")}</div>` : ""}
     ${text.split("\n").filter(l => l.trim()).length > 1 ? `<div class="report">${markdown(text)}</div>` : ""}`);
@@ -398,6 +401,12 @@ $("form").addEventListener("submit", async e => {
   const res = await fetch("/run", { method: "POST", body: JSON.stringify(body) });
   if (!res.ok) { append(`<p class="error">${esc((await res.json()).error)}</p>`); status("The run did not start."); return setRunning(false); }
   poll();
+});
+$("feed").addEventListener("click", async e => {  // delegated: the winner block is re-rendered when the report arrives
+  if (e.target.id !== "copy") return;
+  try { await navigator.clipboard.writeText(finalModel.script); e.target.textContent = "Copied"; }
+  catch { e.target.textContent = "Copy failed, use Show the script"; }
+  setTimeout(() => { e.target.textContent = "Copy Python script"; }, 2500);
 });
 $("stop").addEventListener("click", () => { fetch("/stop", { method: "POST" }); status("Stopping after the current model…"); });
 

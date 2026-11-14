@@ -91,6 +91,29 @@ def test_no_llm_loop():
             os.remove(f)
 
 
+def test_script():
+    import ast
+    import subprocess
+    import sys
+    import tempfile
+
+    spec = {"name": "lr", "model": "logreg", "task": "classification", "target": "Churn", "params": {"C": 0.5},
+            "preprocessing": {"categorical": "ordinal"}, "drop_columns": ["customer_id", "refund_issued"]}
+    with tempfile.TemporaryDirectory() as tmp:
+        out = train.fit_final(churn, spec, f"{tmp}/m.joblib")
+        with open(f"{tmp}/model.py", "w") as f:
+            f.write(out["script"])
+        data = os.path.abspath("data/churn.csv")
+        subprocess.run([sys.executable, "model.py", data, data], cwd=tmp, check=True, capture_output=True)
+        # the copied script, run on its own, predicts exactly what the saved model does
+        assert pd.read_csv(f"{tmp}/predictions.csv")["prediction"].tolist() == train.predict(f"{tmp}/m.joblib", churn)
+
+    # LLM-chosen names and params cannot inject code into the script
+    evil = {**spec, "model": "lightgbm", "name": "x\nimport os", "params": {"a); import os  #": 1}}
+    tree = ast.parse(train.script(evil, churn))
+    assert "os" not in {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+
+
 def test_ui_server():
     import json
     import threading

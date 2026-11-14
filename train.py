@@ -248,7 +248,101 @@ def fit_final(df, spec, path):
     pipe.fit(X, y)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     joblib.dump({"pipeline": pipe, "classes": classes, "spec": spec}, path)
-    return {"model_path": path, "n_rows": len(X), "top_features": _top_features(pipe)}
+    return {"model_path": path, "n_rows": len(X), "top_features": _top_features(pipe), "script": script(spec, df)}
+
+
+def script(spec, df):
+    """Standalone Python source that rebuilds and fits this spec's model without this repo:
+    the same cleaning, preprocessing and estimator settings. df says which columns were
+    read as dates. Every value from the spec goes in through repr(), because names and
+    params are chosen by the LLM and this text is meant to be copied and run."""
+    import keyword
+
+    task, prep = spec["task"], spec.get("preprocessing") or {}
+    mod, cls, defaults = ESTIMATORS[(task, spec["model"])]
+    params = {**defaults, **(spec.get("params") or {})}
+    if all(k.isidentifier() and not keyword.iskeyword(k) for k in params):
+        args = ", ".join(f"{k}={v!r}" for k, v in params.items())
+    else:
+        args = f"**{params!r}"
+    scale = prep.get("scale", spec["model"] in ("logreg", "ridge", "mlp"))
+    ordinal = prep.get("categorical", "onehot") == "ordinal"
+    encoder = ('OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)' if ordinal else
+               f'OneHotEncoder(handle_unknown="infrequent_if_exist", max_categories={prep.get("max_categories", 20)!r})')
+    num_steps = f'("impute", SimpleImputer(strategy={prep.get("numeric_impute", "median")!r}))'
+    if scale:
+        num_steps += ', ("scale", StandardScaler())'
+    dates = [c for c in df.columns if c != spec["target"] and str(df[c].dtype).startswith("datetime")]
+    if task == "classification":
+        target = ("labels = df[TARGET].astype(str)\nclasses = sorted(labels.unique())\n"
+                  "y = pd.Categorical(labels, categories=classes).codes")
+        to_label = "[classes[i] for i in model.predict(features(new))]"
+    else:
+        target, to_label = "y = df[TARGET].astype(float)", "model.predict(features(new))"
+    return f'''# Model {spec["name"]!r} ({spec["model"]}), written by ML Factory.
+# Fit:      python model.py training_data.csv
+# Predict:  python model.py training_data.csv new_rows.csv   -> predictions.csv
+import sys
+
+import pandas as pd
+from {mod} import {cls}
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import {"OrdinalEncoder" if ordinal else "OneHotEncoder"}{", StandardScaler" if scale else ""}
+
+TARGET = {spec["target"]!r}
+DROP = {list(spec.get("drop_columns") or [])!r}
+DATES = {dates!r}
+
+
+def load(path):
+    df = pd.read_parquet(path) if path.endswith(".parquet") else pd.read_csv(path)
+    for c in DATES:
+        if c in df:
+            df[c] = pd.to_datetime(df[c], errors="coerce", format="mixed")
+    return df
+
+
+def features(df):
+    X = df.drop(columns=[TARGET, *DROP], errors="ignore").copy()
+    for c in list(X.columns):
+        s = X[c]
+        if pd.api.types.is_bool_dtype(s):
+            X[c] = s.astype(int)
+        elif pd.api.types.is_datetime64_any_dtype(s):
+            X[c + "_year"], X[c + "_month"], X[c + "_dow"] = s.dt.year, s.dt.month, s.dt.dayofweek
+            X = X.drop(columns=c)
+        elif not pd.api.types.is_numeric_dtype(s):
+            X[c] = s.where(s.isna(), s.astype(str)).astype(object)
+    return X
+
+
+if len(sys.argv) < 2:
+    sys.exit("usage: python model.py training_data.csv [new_rows.csv]")
+df = load(sys.argv[1]).dropna(subset=[TARGET])
+X = features(df)
+{target}
+
+numeric = X.select_dtypes(include="number").columns.tolist()
+categorical = [c for c in X.columns if c not in numeric]
+model = Pipeline([
+    ("prep", ColumnTransformer([
+        ("num", Pipeline([{num_steps}]), numeric),
+        ("cat", Pipeline([("impute", SimpleImputer(strategy="most_frequent")),
+                          ("encode", {encoder})]), categorical),
+    ])),
+    ("model", {cls}({args})),
+])
+model.fit(X, y)
+print(f"Trained on {{len(X)}} rows.")
+
+if len(sys.argv) > 2:
+    new = load(sys.argv[2])
+    new["prediction"] = {to_label}
+    new.to_csv("predictions.csv", index=False)
+    print("Wrote predictions.csv")
+'''
 
 
 def predict(model_path, df):
