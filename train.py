@@ -1,14 +1,4 @@
-"""
-ML Factory — Modal training backend.
-
-  uv run modal deploy modal_train.py                                  # agent calls the deployed functions
-  uv run modal run modal_train.py --csv data/churn.csv --target Churn # smoke test WITHOUT the agent (do this first!)
-"""
-import modal
-
-APP_NAME = "ml-factory"
-VOLUME_NAME = "ml-factory-data"
-DATA_DIR = "/data"
+"""ML Factory — training core. Runs in-process on this machine; the agent calls these functions directly."""
 SEED = 42
 
 # (task, model) -> (module, class, default kwargs). The agent's params override the defaults.
@@ -28,18 +18,6 @@ MODEL_MENU = {
     t: [m for (tt, m) in ESTIMATORS if tt == t] for t in ("classification", "regression")
 }
 
-app = modal.App(APP_NAME)
-vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
-image = (
-    modal.Image.debian_slim(python_version="3.13")
-    .apt_install("libgomp1")  # lightgbm needs OpenMP
-    # pandas/pyarrow must match the local venv: parquet is written locally, read here
-    # ponytail: ML libs unpinned, pin to whatever the first green smoke test resolves
-    .uv_pip_install("pandas==3.0.6", "pyarrow==25.0.1", "scikit-learn", "lightgbm", "xgboost", "joblib")
-)
-
-
-# ------------------------------------------------------------------ local side (your laptop)
 
 def load_local(path: str):
     """Read CSV/Parquet and turn date-looking string columns into real datetimes."""
@@ -60,27 +38,6 @@ def load_local(path: str):
     return df
 
 
-def upload_dataset(df) -> str:
-    """Write df as parquet to the Modal volume. Returns the path inside the volume."""
-    import os
-    import tempfile
-    import uuid
-
-    df = df.copy()
-    for c in df.columns:  # mixed-type object columns break pyarrow
-        if df[c].dtype == object:
-            df[c] = df[c].where(df[c].isna(), df[c].astype(str))
-    remote = f"/datasets/{uuid.uuid4().hex[:12]}.parquet"
-    with tempfile.TemporaryDirectory() as tmp:
-        p = os.path.join(tmp, "data.parquet")
-        df.to_parquet(p, index=False)
-        with vol.batch_upload(force=True) as batch:
-            batch.put_file(p, remote)
-    return remote
-
-
-# ------------------------------------------------------------------ remote side (Modal containers)
-
 def _clean(X):
     """Coerce raw feature columns into types the sklearn pipeline can handle: booleans
     become 0/1 ints, each datetime column is replaced by _year/_month/_dow parts, and any
@@ -99,14 +56,6 @@ def _clean(X):
         elif not pd.api.types.is_numeric_dtype(s):
             X[c] = s.where(s.isna(), s.astype(str)).astype(object)
     return X
-
-
-def _read(path):
-    """Read a parquet file from the volume (path as returned by upload_dataset)."""
-    import pandas as pd
-
-    vol.reload()
-    return pd.read_parquet(f"{DATA_DIR}{path}")
 
 
 def _xy(df, spec, classes=None):
@@ -287,49 +236,28 @@ def _predict_holdout(dev, hidden, spec):
         return _failure(spec, e)
 
 
-@app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1200)
-def train_candidate(spec: dict) -> dict:
-    """Cross-validate ONE candidate. Never raises: errors come back so the agent can react."""
-    try:
-        df = _read(spec["dataset_path"])
-    except Exception as e:
-        return _failure(spec, e)
-    return _train(df, spec)
-
-
-@app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1200)
-def predict_holdout(spec: dict, hidden_path: str) -> dict:
-    """Fit ONE candidate on the dev set (spec's dataset_path) and predict the hidden set."""
-    try:
-        dev, hidden = _read(spec["dataset_path"]), _read(hidden_path)
-    except Exception as e:
-        return _failure(spec, e)
-    return _predict_holdout(dev, hidden, spec)
-
-
-@app.function(image=image, volumes={DATA_DIR: vol}, cpu=4, memory=8192, timeout=1800)
-def fit_final(spec: dict, run_id: str) -> dict:
-    """Fit the winner on all data, save it to the volume, return path + top features."""
+def fit_final(df, spec, path):
+    """Fit the winner on all rows and save {pipeline, classes, spec} to `path`.
+    Returns the path, row count and top features."""
     import os
 
     import joblib
 
-    X, y, classes = _xy(_read(spec["dataset_path"]), spec)
+    X, y, classes = _xy(df, spec)
     pipe = _build_pipeline(X, spec)
     pipe.fit(X, y)
-    out_dir = f"{DATA_DIR}/models/{run_id}"
-    os.makedirs(out_dir, exist_ok=True)
-    path = f"{out_dir}/{spec['name']}.joblib"
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     joblib.dump({"pipeline": pipe, "classes": classes, "spec": spec}, path)
-    vol.commit()
-    return {"model_path": path.removeprefix(DATA_DIR), "n_rows": len(X), "top_features": _top_features(pipe)}
+    return {"model_path": path, "n_rows": len(X), "top_features": _top_features(pipe)}
 
 
-@app.local_entrypoint()
-def smoke(csv: str, target: str, task: str = "classification"):
-    """Every model in the menu with defaults, 3-fold. If this works, the backend is done."""
-    path = upload_dataset(load_local(csv))
-    base = {"dataset_path": path, "target": target, "task": task, "cv_folds": 3}
-    specs = [{**base, "name": m, "model": m} for m in MODEL_MENU[task]]
-    for r in train_candidate.map(specs):
-        print(r["name"], "→", {k: v["mean"] for k, v in r["metrics"].items()} if r["ok"] else r["error"])
+def predict(model_path, df):
+    """Predictions of a model saved by fit_final for new rows: class labels or values.
+    joblib is pickle, so only load model files this tool wrote."""
+    import joblib
+
+    m = joblib.load(model_path)
+    spec = m["spec"]
+    X = _clean(df.drop(columns=[spec["target"], *spec.get("drop_columns", [])], errors="ignore"))
+    pred = m["pipeline"].predict(X)
+    return [m["classes"][i] for i in pred] if m["classes"] else pred

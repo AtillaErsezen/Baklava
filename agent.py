@@ -1,9 +1,12 @@
 """
-ML Factory — agent. Open-weight LLM on Nebius (OpenAI-compatible API) + Modal compute.
+ML Factory — local agent. Everything trains on this machine; the LLM is any OpenAI-compatible
+endpoint (default: Ollama on localhost), or none at all.
 
-  uv run --env-file .env agent.py data/churn.csv --target Churn
-  uv run --env-file .env agent.py data/houses.csv --target SalePrice --task regression
-  uv run agent.py data/churn.csv --target Churn --dry-run      # scripted LLM, no API key
+  uv run agent.py data/churn.csv --target Churn --goal "catch churners early; missing one costs more than a false alarm"
+  uv run agent.py data/houses.csv --target SalePrice --task regression
+  uv run agent.py data/churn.csv --target Churn --no-llm       # fixed portfolio, no LLM needed
+
+Env: LLM_BASE_URL (default http://localhost:11434/v1), LLM_API_KEY, AGENT_MODEL.
 """
 import argparse
 import json
@@ -12,15 +15,15 @@ import time
 import uuid
 from types import SimpleNamespace
 
-import modal
 import numpy as np
 import pandas as pd
 
 import stats
-from modal_train import APP_NAME, MODEL_MENU, SEED, load_local, upload_dataset
+import train
+from train import MODEL_MENU, SEED, load_local
 
-MODEL = os.getenv("AGENT_MODEL", "Qwen/Qwen3-235B-A22B-Instruct-2507")
-BASE_URL = os.getenv("NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1/")
+MODEL = os.getenv("AGENT_MODEL", "qwen3")
+BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
 MAX_STEPS = 20
 MAX_ROUNDS = 3
 MAX_CANDIDATES = 8
@@ -70,7 +73,7 @@ judgement calls and explain them. {int(HIDDEN_FRAC * 100)}% of the rows are held
 you never see until the end.
 
 Workflow
-1. get_data_profile. Decide: task; primary metric (binary → roc_auc, or f1_macro if the minority class matters and
+1. get_data_profile. Read the user's goal, if given: it decides the metric and trade-offs. Decide: task; primary metric (binary → roc_auc, or f1_macro if the minority class matters and
    imbalance is heavy; multiclass → f1_macro; regression → rmse); CV scheme (timeseries if the profile reports a
    time order and the target is about the future, else kfold); columns to drop (id_like, constant, possible_leakage,
    free text). Use inspect_column when a flag is ambiguous.
@@ -107,7 +110,7 @@ TOOLS = [
     _tool("inspect_column", "Sample values, value counts and (for classification) target rate per value for one "
           "column. Use to confirm leakage or decide whether to drop a column.",
           {"column": {"type": "string"}}, ["column"]),
-    _tool("run_experiments", "Cross-validate candidates in parallel on Modal. Without candidates it runs the fixed "
+    _tool("run_experiments", "Cross-validate candidates on this machine. Without candidates it runs the fixed "
           "portfolio. Returns a leaderboard: validation mean/std, train mean, overfit_gap, all metrics.", {
               "rationale": {"type": "string", "description": "Why this round. Shown to the user."},
               "task": {"type": "string", "enum": ["classification", "regression"]},
@@ -271,12 +274,12 @@ def profile_data(df: pd.DataFrame, target: str) -> dict:
     }
 
 
-# ------------------------------------------------------------------ dry run (no API key)
+# ------------------------------------------------------------------ --no-llm
 
 class ScriptedClient:
     """Stand-in for the OpenAI client: replays a fixed tool sequence so the whole pipeline
-    except the LLM's judgement (Modal, statistics, events, saving) can be tested without
-    an API key. Same call shape as client.chat.completions.create."""
+    except the LLM's judgement (training, statistics, events, saving) runs without an LLM:
+    no extra tuning rounds, no written narrative. Same call shape as client.chat.completions.create."""
 
     def __init__(self, profile):
         self.profile, self.step = profile, 0
@@ -295,47 +298,29 @@ class ScriptedClient:
         elif self.step == 2:
             bad = {"id_like", "possible_leakage", "constant"}
             name, inp = "run_experiments", {
-                "rationale": "Dry run: fixed portfolio, flagged columns dropped.",
+                "rationale": "No LLM: fixed portfolio, flagged columns dropped.",
                 "task": task, "primary_metric": "roc_auc" if task == "classification" else "rmse",
                 "drop_columns": [c["name"] for c in self.profile["columns"] if bad & set(c.get("flags", []))]}
         elif self.step == 3:
             name, inp = "confirm_finalists", {}
         elif self.step == 4:
-            name, inp = "write_report", {"recommended": last["tie_group"][0], "markdown": "# Dry run report",
-                                         "spoken_summary": "Dry run complete."}
+            name, inp = "write_report", {"recommended": last["tie_group"][0], "markdown": "# Report (no LLM)",
+                                         "spoken_summary": "Run complete."}
         else:
             name = None
         calls = [SimpleNamespace(id=f"dry{self.step}", type="function",
                                  function=SimpleNamespace(name=name, arguments=json.dumps(inp)))] if name else None
-        msg = SimpleNamespace(content=f"(dry run) calling {name}" if name else "(dry run) done", tool_calls=calls)
+        msg = SimpleNamespace(content=f"(no LLM) calling {name}" if name else "(no LLM) done", tool_calls=calls)
         return SimpleNamespace(choices=[SimpleNamespace(message=msg)], usage=None)
 
 
 # ------------------------------------------------------------------ the agent
 
-def _nebius():
-    """OpenAI client pointed at Nebius. Exits with a hint if NEBIUS_API_KEY is missing."""
+def _llm():
+    """OpenAI-compatible client for LLM_BASE_URL. Local servers ignore the key."""
     from openai import OpenAI
 
-    key = os.getenv("NEBIUS_API_KEY")
-    if not key:
-        raise SystemExit("NEBIUS_API_KEY is not set. Use `uv run --env-file .env ...` or --dry-run.")
-    return OpenAI(base_url=BASE_URL, api_key=key)
-
-
-def _maybe_supabase():
-    """Return a Supabase client for live event streaming, or None if the env vars
-    aren't set or the package/connection fails. Live UI is optional; jsonl replay
-    always works, so callers should treat a None return as a no-op, not an error."""
-    url, key = os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY")
-    if not (url and key):
-        return None
-    try:
-        from supabase import create_client
-        return create_client(url, key)
-    except Exception as e:
-        print("Supabase disabled:", e)
-        return None
+    return OpenAI(base_url=BASE_URL, api_key=os.getenv("LLM_API_KEY", "local"))
 
 
 def _setup_key(spec):
@@ -348,7 +333,8 @@ class FactoryRun:
     the LLM tool loop (profile/inspect/experiment/confirm/report), and save the result.
     One instance = one dataset + target; not reused across runs."""
 
-    def __init__(self, data_path: str, target: str, task_hint: str | None = None, dry_run: bool = False):
+    def __init__(self, data_path: str, target: str, task_hint: str | None = None, goal: str | None = None,
+                 no_llm: bool = False):
         """Load the dataset, validate the target, split dev/hidden, and profile the dev set
         up front so get_data_profile is a free tool call. The LLM only ever sees dev data."""
         self.run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
@@ -356,7 +342,7 @@ class FactoryRun:
         if target not in self.df.columns:
             raise SystemExit(f"Target '{target}' not found. Columns: {list(self.df.columns)}")
         self.dataset_name = os.path.basename(data_path)
-        self.target, self.task_hint = target, task_hint
+        self.target, self.task_hint, self.goal = target, task_hint, goal
         self.time_col = sorted_time_column(self.df, target)
         self.dev, self.hidden = split_holdout(self.df, target, task_hint or guess_task(self.df[target]), self.time_col)
         self.profile = profile_data(self.dev, target)
@@ -366,40 +352,20 @@ class FactoryRun:
             "hidden_rows_duplicated_in_dev": cross_split_duplicates(self.dev, self.hidden, target)}
         if self.time_col:
             self.profile["time_order"] = {"column": self.time_col, "suggest": "cv=timeseries with this time_column"}
-        self.paths = None
         self.rounds, self.pm, self.setup = 0, None, None
         self.specs, self.results, self.events = {}, [], []
         self.finalists, self.final, self.report = None, None, None
         self.tokens = {"prompt": 0, "completion": 0}
-        self.client = ScriptedClient(self.profile) if dry_run else _nebius()
-        self.train_fn = modal.Function.from_name(APP_NAME, "train_candidate")
-        self.holdout_fn = modal.Function.from_name(APP_NAME, "predict_holdout")
-        self.final_fn = modal.Function.from_name(APP_NAME, "fit_final")
-        self.supabase = _maybe_supabase()
+        self.client = ScriptedClient(self.profile) if no_llm else _llm()
 
-    # ---- event stream: stdout + jsonl (replay mode for the demo) + optional Supabase (live UI)
+    # ---- event stream: stdout + jsonl
     def emit(self, kind: str, payload: dict):
         """Record one timeline event (thought, tool_call, leaderboard, etc.) to the
-        in-memory list that `save()` persists, print it, and best-effort push it to
-        Supabase for the live UI. A Supabase failure is logged, never raised."""
+        in-memory list that `save()` persists, and print it."""
         event = {"run_id": self.run_id, "ts": time.time(), "kind": kind,
                  "payload": json.loads(json.dumps(payload, default=str))}
         self.events.append(event)
         print(f"[{kind}] {json.dumps(payload, default=str, ensure_ascii=False)[:400]}")
-        if self.supabase:
-            try:
-                self.supabase.table("events").insert(event).execute()
-            except Exception as e:
-                print("supabase insert failed:", e)
-
-    def _upload(self):
-        """Upload dev, hidden and full data to the Modal volume once; returns their paths."""
-        if self.paths is None:
-            self.emit("status", {"msg": "Uploading dataset to Modal"})
-            self.paths = {"dev": upload_dataset(self.dev), "hidden": upload_dataset(self.hidden),
-                          "full": upload_dataset(pd.concat([self.dev, self.hidden], ignore_index=True))}
-        return self.paths
-
     # ---- tools
     # Each tool_* method mirrors one entry in TOOLS and is dispatched by name from
     # run(). All take the tool's `input` dict and return a JSON-serializable dict —
@@ -427,7 +393,7 @@ class FactoryRun:
 
     def tool_run_experiments(self, inp):
         """Validate a round (the fixed portfolio when no candidates are given), cross-validate
-        it in parallel via `train_fn.map`, and return a leaderboard sorted by the primary
+        it, and return a leaderboard sorted by the primary
         metric with overfit_gap and a suspiciously-high warning per row. Enforces
         MAX_ROUNDS/MAX_CANDIDATES and rejects models that don't belong to the task."""
         if self.rounds >= MAX_ROUNDS:
@@ -448,9 +414,8 @@ class FactoryRun:
         if unknown:
             return {"error": f"Unknown columns {unknown}. Columns: {list(self.dev.columns)}"}
 
-        paths = self._upload()
         self.rounds += 1
-        base = {"dataset_path": paths["dev"], "target": self.target, "task": task, "cv": cv,
+        base = {"target": self.target, "task": task, "cv": cv,
                 "cv_folds": inp.get("cv_folds", 5), "time_column": time_col, "drop_columns": drops}
         self.pm, self.setup = pm, _setup_key(base)
         specs = []
@@ -467,7 +432,8 @@ class FactoryRun:
         t0 = time.time()
         hib = HIGHER_IS_BETTER[pm]
         rows = []
-        for r in self.train_fn.map(specs):
+        # shortcut: candidates run one after another (each already uses all cores); parallelise if rounds get slow
+        for r in (train._train(self.dev, s) for s in specs):
             r["round"] = self.rounds
             self.results.append(r)
             if not r["ok"]:
@@ -516,7 +482,7 @@ class FactoryRun:
         # 1) repeated CV on identical folds -> paired significance test vs the best
         cspecs = [self.specs[n] if timeseries else {**self.specs[n], "cv_folds": CONFIRM_FOLDS,
                                                     "cv_repeats": CONFIRM_REPEATS} for n in names]
-        conf = {r["name"]: r for r in self.train_fn.map(cspecs)}
+        conf = {s["name"]: train._train(self.dev, s) for s in cspecs}
         ok = [n for n in names if conf[n]["ok"]]
         if not ok:
             return {"error": "Confirmation CV failed for all finalists.",
@@ -540,8 +506,7 @@ class FactoryRun:
         self.emit("confirm", {"primary_metric": pm, "best": best, "rows": rows})
 
         # 2) hidden set, scored once
-        hold = {h["name"]: h for h in self.holdout_fn.map([self.specs[n] for n in ok],
-                                                          [self.paths["hidden"]] * len(ok))}
+        hold = {n: train._predict_holdout(self.dev, self.hidden, self.specs[n]) for n in ok}
         scored = [n for n in ok if hold[n]["ok"]]
         boot = {}
         if best in scored:
@@ -562,8 +527,8 @@ class FactoryRun:
                 "note": "Recommend one model from tie_group; prefer the simpler/faster one, not the best hidden score."}
 
     def tool_write_report(self, inp):
-        """Check the recommendation is in the tie group, fit it on all data (dev + hidden)
-        via Modal's `fit_final`, and store the report with the harness-computed finalist
+        """Check the recommendation is in the tie group, fit it on all data (dev + hidden),
+        save it under runs/, and store the report with the harness-computed finalist
         table appended. Calling this is also the loop's stop signal."""
         if self.finalists is None:
             return {"error": "Call confirm_finalists first."}
@@ -572,7 +537,7 @@ class FactoryRun:
         if rec not in tie:
             return {"error": f"recommended must be one of the tie group: {tie}"}
         self.emit("status", {"msg": f"Training final model '{rec}' on all data"})
-        out = self.final_fn.remote({**self.specs[rec], "dataset_path": self.paths["full"]}, self.run_id)
+        out = train.fit_final(self.df, self.specs[rec], f"runs/{self.run_id}_model.joblib")
         self.final = {"name": rec, "spec": self.specs[rec], **out}
         self.emit("final_model", self.final)
         markdown = inp["markdown"].rstrip() + "\n\n" + self._finalist_table(rec)
@@ -628,13 +593,20 @@ class FactoryRun:
                                 "rows": len(self.df), "features": self.profile["n_features"],
                                 "split": self.profile["split"]})
         hint = f" The user says this is a {self.task_hint} task." if self.task_hint else ""
+        if self.goal:
+            hint += f" The user's goal and details: {self.goal}"
         messages = [{"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": f"Dataset '{self.dataset_name}', target column '{self.target}'.{hint} "
                                                 "Build the best model you can. Start by reading the data profile."}]
         nudges = 0
         for _ in range(MAX_STEPS):
-            resp = self.client.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS,
-                                                       temperature=0, max_tokens=2048)
+            try:
+                resp = self.client.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS,
+                                                           temperature=0, max_tokens=2048)
+            except Exception as e:  # LLM down mid-run: keep what was trained so far
+                self.emit("status", {"msg": f"LLM call failed ({type(e).__name__}: {e}). Is a server running at "
+                                            f"{BASE_URL} with model '{MODEL}'? Or use --no-llm."})
+                break
             if resp.usage:
                 self.tokens["prompt"] += resp.usage.prompt_tokens
                 self.tokens["completion"] += resp.usage.completion_tokens
@@ -665,7 +637,7 @@ class FactoryRun:
 
     def save(self):
         """Persist this run under runs/<run_id>_*: the full event timeline as jsonl
-        (for the replay-mode fallback), profile/results/finalists/final/tokens as json,
+        profile/results/finalists/final/tokens as json,
         and the markdown report if one was written. Called once at the end of run()."""
         os.makedirs("runs", exist_ok=True)
         prefix = f"runs/{self.run_id}"
@@ -677,7 +649,9 @@ class FactoryRun:
         if self.report:
             with open(f"{prefix}_report.md", "w", encoding="utf-8") as f:
                 f.write(self.report["markdown"])
-        print(f"\nSaved → {prefix}_*")
+        if self.report:
+            print("\n" + self.report["markdown"])
+        print(f"\nSaved → {prefix}_*" + (f"\nModel → {self.final['model_path']}" if self.final else ""))
 
 
 if __name__ == "__main__":
@@ -685,6 +659,7 @@ if __name__ == "__main__":
     ap.add_argument("data")
     ap.add_argument("--target", required=True)
     ap.add_argument("--task", choices=["classification", "regression"])
-    ap.add_argument("--dry-run", action="store_true", help="scripted LLM, no API key needed")
+    ap.add_argument("--goal", help="what the model is for, constraints, anything the agent should know")
+    ap.add_argument("--no-llm", action="store_true", help="fixed portfolio only, no LLM needed")
     args = ap.parse_args()
-    FactoryRun(args.data, args.target, args.task, args.dry_run).run()
+    FactoryRun(args.data, args.target, args.task, args.goal, args.no_llm).run()
