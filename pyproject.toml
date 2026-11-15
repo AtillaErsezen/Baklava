@@ -12,3 +12,17 @@ dependencies = [
     "scipy>=1.18.1",
     "xgboost>=3.4.1",
 ]
+
+[project.optional-dependencies]
+# LLM Factory training (llm_train.py). Not needed for --kaggle export. `uv sync --extra llm`
+llm = [
+    "torch",
+    "transformers",
+    "peft",
+    "datasets",
+    "librosa",
+    "soundfile",
+    "pillow",
+    "sentencepiece",
+    "protobuf",
+]

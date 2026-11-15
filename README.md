@@ -79,6 +79,66 @@ Use the model on new rows:
 uv run predict.py runs/<run_id>_model.joblib new.csv predictions.csv
 ```
 
+## LLM Factory: fine-tune open models
+
+`llm_factory.py` does for language, vision and speech models what the tabular agent does for tables: you give it
+data and a goal, a crafter agent picks open models from Hugging Face, several candidates are fine-tuned in parallel,
+each is scored on the same held-out test rows, and the one with the best test score is exported.
+
+> Status: the training code in `llm_train.py` has not been executed yet. Data profiling, Hub search, the run flow
+> and the Kaggle export are tested; the first real training run is the test of the rest.
+
+| Kind | What it trains | Data columns | Test score |
+|---|---|---|---|
+| `text` | chat / instruction LLM, LoRA | `prompt` + `response`, or `messages` | word-overlap F1 of generated answers |
+| `decision` | "System One" model: typed decisions (choice, yes/no, score) from one encoder pass, no text generation | input text + one column per decision | agreement with the labels |
+| `vision` | vision-language model, LoRA | `image` + `prompt` + `response` | word-overlap F1 of generated answers |
+| `stt` | speech-to-text, Whisper family | `audio` + `text` | 1 − word error rate |
+| `tts` | text-to-speech, SpeechT5, single speaker | `audio` + `text` | minus spectrogram loss |
+
+Common column names (`instruction`/`output`, `question`/`answer`, ...) are recognised; the agent maps the rest.
+Data is a `.jsonl`, `.json`, `.csv` or `.parquet` file, or a Hugging Face dataset as `hf:org/name[:config[:split]]`.
+Image and audio columns hold file paths or URLs.
+
+Train on Kaggle's free GPUs (nothing heavy is installed or run on your machine):
+
+```bash
+uv run llm_factory.py chats.jsonl --goal "answer support questions in our tone" --kaggle run.ipynb
+```
+
+On kaggle.com choose Create > Notebook > File > Import notebook, set the accelerator to GPU T4 x2, turn Internet on
+and run all. The winner appears as a zip in the notebook's output. Data files up to 5 MB for `text` and `decision`
+are embedded in the notebook; larger files, images and audio go in as a Kaggle dataset.
+
+Train on this machine (uses a GPU when there is one; without one only very small models are practical):
+
+```bash
+uv sync --extra llm
+uv run --extra llm llm_factory.py chats.jsonl --goal "answer support questions in our tone"
+```
+
+| Option | Meaning |
+|---|---|
+| `--goal` | what the model is for; the agent picks the kind and the candidates from it |
+| `--kind` | `text`, `decision`, `vision`, `stt` or `tts`; guessed when the data makes it obvious |
+| `--models` | comma-separated Hugging Face model ids to try |
+| `--no-llm` | no agent: trains `--models`, or the default candidates for the kind |
+| `--kaggle FILE.ipynb` | write a Kaggle notebook for this plan and stop |
+| `--parallel N` | candidates trained at once (default: one per GPU, else 2) |
+| `--max-rows N` | use at most this many rows |
+
+Set `HF_TOKEN` to use gated or private models and datasets.
+
+The download is `runs/<run_id>_llm/<winner>-model.zip`, with a `README.txt` on how to use it. Text models also
+contain `model.gguf` and a `Modelfile`, converted with llama.cpp's converter (cloned on first use):
+
+```bash
+ollama create my-model -f Modelfile
+```
+
+Ollama runs text-generation models only, so decision, vision and speech models are exported as Hugging Face model
+folders. A decision model answers from the command line with `python llm_train.py decide . "some text"`.
+
 ## Tests
 
 ```bash

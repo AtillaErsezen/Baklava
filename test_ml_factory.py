@@ -150,6 +150,106 @@ def test_ui_server():
             os.remove(f)
 
 
+def test_llm_scores():
+    import llm_train as lt
+
+    assert lt.token_f1("The cat sat.", "the cat sat") == 1.0 and lt.token_f1("dog", "cat") == 0.0
+    assert abs(lt.token_f1("the cat", "the cat sat down") - 2 / 3) < 1e-9  # precision 1, recall 0.5
+    assert lt.wer(["the cat sat"], ["the cat sat"]) == 0.0
+    assert abs(lt.wer(["the bat sat down"], ["the cat sat"]) - 2 / 3) < 1e-9  # 1 substitution + 1 insertion / 3
+    qs = {"cat": {"type": "choice", "options": ["a", "b"]}, "ok": {"type": "noul"},
+          "pri": {"type": "score", "min": 0, "max": 10}}
+    score, per_q = lt.decision_agreement([{"cat": "a", "ok": True, "pri": 5.0}, {"cat": "b", "ok": True, "pri": 0.0}],
+                                         [{"cat": "a", "ok": "yes", "pri": 5}, {"cat": "a", "ok": "no", "pri": 10}], qs)
+    assert per_q == {"cat": 0.5, "ok": 0.5, "pri": 0.5} and score == 0.5
+    assert lt.pick_winner([{"ok": True, "score": 0.2, "name": "a"}, {"ok": False, "name": "b"},
+                           {"ok": True, "score": 0.7, "name": "c"}])["name"] == "c"
+    assert lt.pick_winner([{"ok": False}]) is None
+    assert set(lt.PORTFOLIO) == set(lt.DEFAULTS) == set(lt.BUILDERS) == set(lt.KINDS)
+
+
+def test_llm_setup():
+    import llm_factory as lf
+
+    guess = lambda d, media=None: lf.infer_setup(pd.DataFrame(d), media)
+    t = guess({"instruction": ["hi", "bye"] * 10, "output": ["hello", "ciao"] * 10})
+    assert t["kind"] == "text" and t["columns"] == {"prompt": "instruction", "response": "output"}
+    d = guess({"text": [f"ticket {i} about a long enough problem" for i in range(40)],
+               "category": ["billing", "tech"] * 20, "urgent": ["yes", "no"] * 20, "priority": [i * 2.5 for i in range(40)]})
+    assert d["kind"] == "decision" and d["columns"]["inputs"] == ["text"]
+    assert d["questions"] == {"category": {"type": "choice", "options": ["billing", "tech"]}, "urgent": {"type": "noul"},
+                              "priority": {"type": "score", "min": 0.0, "max": 97.5}}
+    assert guess({"image": ["a.png", "b.jpg"], "question": ["q"] * 2, "answer": ["a"] * 2})["kind"] == "vision"
+    assert guess({"audio": ["a.wav", "b.wav"], "text": ["x", "y"]})["kind"] is None  # stt or tts: the goal decides
+    one_class = guess({"text": ["a long review text"] * 4, "label": ["neg"] * 4}, {"label": ["neg", "pos"]})
+    assert one_class["questions"] == {"label": {"type": "choice", "options": ["neg", "pos"]}}
+
+
+def test_llm_notebook_and_run():
+    import ast
+    import base64
+    import json
+    import tempfile
+
+    import llm_factory as lf
+    import llm_train as lt
+
+    with tempfile.TemporaryDirectory() as tmp:
+        data = f"{tmp}/chats.jsonl"
+        with open(data, "w") as f:
+            f.writelines(json.dumps({"prompt": f"q{i}", "response": f"a{i}"}) + "\n" for i in range(30))
+
+        # --kaggle: no training, a notebook that carries the trainer, the data and the plan
+        run = lf.LLMFactoryRun(data, "answer questions", no_llm=True, kaggle=f"{tmp}/run.ipynb")
+        run.run()
+        with open(f"{tmp}/run.ipynb") as f:
+            nb = json.load(f)
+        code = [c["source"] for c in nb["cells"] if c["cell_type"] == "code"]
+        trainer = next(c for c in code if c.startswith("%%writefile llm_train.py\n"))
+        with open(lt.__file__) as f:
+            assert trainer.split("\n", 1)[1] == f.read()
+        scope = {}
+        exec(next(c for c in code if c.startswith("PLAN = ")), scope)  # the plan cell is plain Python literals
+        assert scope["PLAN"]["kind"] == "text" and scope["PLAN"]["data"] == "/kaggle/working/chats.jsonl"
+        assert scope["PLAN"]["candidates"] == lt.PORTFOLIO["text"]
+        payload = ast.parse(next(c for c in code if c.startswith("import base64"))).body[1].body[0].value.args[0].args[0]
+        with open(data, "rb") as f:
+            assert base64.b64decode(payload.value) == f.read()
+        assert "run_plan(PLAN" in code[-1] and nb["metadata"]["kaggle"]["isGpuEnabled"]
+        for f in glob.glob(f"runs/{run.run_id}_*"):
+            os.remove(f)
+
+        # local run with the trainer replaced: the best test score wins, whatever order results arrive in
+        scores = {"smollm2-360m": 0.31, "qwen2.5-0.5b": 0.58, "qwen2.5-1.5b": None}
+        real = lt.train_all, lt.export_winner
+
+        def fake_train_all(plan, out_dir, parallel=None, on_result=None):
+            assert plan["columns"]["prompt"] == "prompt" and plan["data"] == data
+            results = [{"name": c["name"], "ok": True, "base_model": c["base_model"], "score": scores[c["name"]],
+                        "metrics": {"token_f1": scores[c["name"]]}, "train_seconds": 1.0, "model_dir": tmp}
+                       if scores[c["name"]] is not None else
+                       {"name": c["name"], "ok": False, "base_model": c["base_model"], "error": "CUDA out of memory"}
+                       for c in plan["candidates"]]
+            for r in results:
+                on_result(r)
+            return results
+
+        lt.train_all = fake_train_all
+        lt.export_winner = lambda winner, plan, out_dir, losers=(): {"model_dir": tmp, "zip": f"{tmp}/m.zip",
+                                                                     "ollama": True, "note": None}
+        run = lf.LLMFactoryRun(data, "answer questions", no_llm=True)
+        try:
+            run.run()
+            assert run.final["name"] == "qwen2.5-0.5b" and run.report["recommended"] == "qwen2.5-0.5b"
+            assert "| qwen2.5-0.5b ★ |" in run.report["markdown"] and "| failed |" in run.report["markdown"]
+            assert [e["kind"] for e in run.events].count("candidate") == 3
+            assert "error" in run.tool_train_candidates({"rationale": "t", "kind": "decision", "candidates": []})  # kind is fixed
+        finally:
+            lt.train_all, lt.export_winner = real
+            for f in glob.glob(f"runs/{run.run_id}_*"):
+                os.remove(f)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

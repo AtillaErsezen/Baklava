@@ -143,7 +143,6 @@ TOOLS = [
         "markdown": {"type": "string"}, "spoken_summary": {"type": "string"}},
         ["recommended", "markdown", "spoken_summary"]),
 ]
-REQUIRED = {t["function"]["name"]: t["function"]["parameters"]["required"] for t in TOOLS}
 
 
 # ------------------------------------------------------------------ data: split + profile (local, cheap)
@@ -336,6 +335,8 @@ class FactoryRun:
     """One end-to-end run: load data, split off the hidden set, profile the dev set, drive
     the LLM tool loop (profile/inspect/experiment/confirm/report), and save the result.
     One instance = one dataset + target; not reused across runs."""
+
+    system_prompt, tools = SYSTEM_PROMPT, TOOLS  # llm_factory.LLMFactoryRun swaps these and _start()
 
     def __init__(self, data_path: str, target: str, task_hint: str | None = None, goal: str | None = None,
                  no_llm: bool = False):
@@ -579,13 +580,14 @@ class FactoryRun:
     def _dispatch(self, name, arguments):
         """Parse and check one tool call, run it, and return its result. Bad JSON, unknown
         tools and missing required fields come back as errors the LLM can fix."""
-        if name not in REQUIRED:
-            return {"error": f"Unknown tool '{name}'. Tools: {list(REQUIRED)}"}
+        required = {t["function"]["name"]: t["function"]["parameters"]["required"] for t in self.tools}
+        if name not in required:
+            return {"error": f"Unknown tool '{name}'. Tools: {list(required)}"}
         try:
             inp = json.loads(arguments or "{}")
         except json.JSONDecodeError as e:
             return {"error": f"Arguments are not valid JSON: {e}"}
-        missing = [k for k in REQUIRED[name] if k not in inp]
+        missing = [k for k in required[name] if k not in inp]
         if missing:
             return {"error": f"Missing required fields {missing} for {name}."}
         self.emit("tool_call", {"tool": name, "input": inp})
@@ -595,11 +597,8 @@ class FactoryRun:
             return {"error": f"{type(e).__name__}: {e}"}
 
     # ---- loop
-    def run(self):
-        """Drive the tool-use loop: send the system prompt + task, stream any text as
-        `thought` events, dispatch each tool call, and feed results back. Stops when
-        write_report succeeds or after MAX_STEPS; if the model stops calling tools
-        early it is nudged twice. Always saves whatever was produced."""
+    def _start(self):
+        """Emit run_start and return the opening user message for the LLM."""
         self.emit("run_start", {"dataset": self.dataset_name, "target": self.target, "model": MODEL,
                                 "rows": len(self.df), "features": self.profile["n_features"],
                                 "split": self.profile["split"],
@@ -607,13 +606,19 @@ class FactoryRun:
         hint = f" The user says this is a {self.task_hint} task." if self.task_hint else ""
         if self.goal:
             hint += f" The user's goal and details: {self.goal}"
-        messages = [{"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Dataset '{self.dataset_name}', target column '{self.target}'.{hint} "
-                                                "Build the best model you can. Start by reading the data profile."}]
+        return (f"Dataset '{self.dataset_name}', target column '{self.target}'.{hint} "
+                "Build the best model you can. Start by reading the data profile.")
+
+    def run(self):
+        """Drive the tool-use loop: send the system prompt + task, stream any text as
+        `thought` events, dispatch each tool call, and feed results back. Stops when
+        write_report succeeds or after MAX_STEPS; if the model stops calling tools
+        early it is nudged twice. Always saves whatever was produced."""
+        messages = [{"role": "system", "content": self.system_prompt}, {"role": "user", "content": self._start()}]
         nudges = 0
         for _ in range(MAX_STEPS):
             try:
-                resp = self.client.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS,
+                resp = self.client.chat.completions.create(model=MODEL, messages=messages, tools=self.tools,
                                                            temperature=0, max_tokens=2048)
             except Exception as e:  # LLM down mid-run: keep what was trained so far
                 self.emit("status", {"msg": f"LLM call failed ({type(e).__name__}: {e}). Is a server running at "
